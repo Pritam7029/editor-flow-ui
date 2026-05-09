@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import Modal from '../common/Modal';
 import { useAppContext } from '../../context/AppContext';
 import { COLOR_OPTIONS } from '../../utils/constants';
-
+import { API_BASE_URL } from '../../config/api';
 const EMPTY = { name: '', email: '', role: '', status: 'active', color: '#8b5cf6' };
 
 export default function EditorModal({ isOpen, onClose }) {
@@ -42,7 +42,7 @@ export default function EditorModal({ isOpen, onClose }) {
             const inviteLink = `${window.location.origin}/?invite=${meta.currentWorkspaceId}`;
             
             try {
-              const res = await fetch('http://localhost:3001/api/invite', {
+              const res = await fetch( `${API_BASE_URL}/invite`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({

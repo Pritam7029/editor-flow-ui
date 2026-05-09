@@ -51,6 +51,7 @@ export default function LoginPage() {
       });
       if (error) throw error;
     } catch (err) {
+      console.error('Google login error:', err);
       setError(err.message);
     } finally {
       setLoading(false);
