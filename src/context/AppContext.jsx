@@ -1,4 +1,10 @@
-import { createContext, useContext, useEffect, useMemo, useReducer } from 'react';
+import { createContext, useContext, useEffect, useMemo, useReducer, useState } from 'react';
+import {
+  loadBackendWorkspaceMeta,
+  createBackendWorkspace,
+  renameBackendWorkspace,
+  removeBackendWorkspace
+} from '../services/backendWorkspaceBridge';
 import {
   loadMeta,
   saveMeta,
@@ -58,6 +64,11 @@ export function AppProvider({ children, session }) {
       status: 'active'
     };
   }
+
+    const [backendWorkspaces, setBackendWorkspaces] = useState([]);
+    const [backendWorkspaceLoading, setBackendWorkspaceLoading] = useState(false);
+    const [backendWorkspaceError, setBackendWorkspaceError] = useState(null);
+  
 
   const initialWorkspace = loadWorkspaceState(initialMeta.currentWorkspaceId);
   if (!initialWorkspace.ownerId && initialMeta.account) {
@@ -590,7 +601,73 @@ export function AppProvider({ children, session }) {
     };
   }, [state]);
 
-  const value = useMemo(() => ({ ...state, ...helpers }), [state, helpers]);
+  async function refreshBackendWorkspaces() {
+  setBackendWorkspaceLoading(true);
+  setBackendWorkspaceError(null);
+
+  try {
+    const workspaces = await loadBackendWorkspaceMeta();
+    setBackendWorkspaces(workspaces);
+    return workspaces;
+  } catch (error) {
+    const message = error.message || 'Failed to load workspaces';
+    setBackendWorkspaceError(message);
+    throw error;
+  } finally {
+    setBackendWorkspaceLoading(false);
+  }
+}
+
+async function addBackendWorkspace(name) {
+  const workspace = await createBackendWorkspace(name);
+  await refreshBackendWorkspaces();
+  return workspace;
+}
+
+async function editBackendWorkspace(workspaceId, name) {
+  const workspace = await renameBackendWorkspace(workspaceId, name);
+  await refreshBackendWorkspaces();
+  return workspace;
+}
+
+async function deleteBackendWorkspaceById(workspaceId) {
+  await removeBackendWorkspace(workspaceId);
+  await refreshBackendWorkspaces();
+  return true;
+}
+
+useEffect(() => {
+  const userId =
+    session && session.user && session.user.id ? session.user.id : null;
+
+  if (!userId) return;
+
+  refreshBackendWorkspaces().catch((error) => {
+    console.error('Failed to load backend workspaces:', error);
+  });
+}, [session && session.user && session.user.id]);
+
+ const value = useMemo(
+  () => ({
+    ...state,
+    ...helpers,
+
+    backendWorkspaces,
+    backendWorkspaceLoading,
+    backendWorkspaceError,
+    refreshBackendWorkspaces,
+    addBackendWorkspace,
+    editBackendWorkspace,
+    deleteBackendWorkspaceById
+  }),
+  [
+    state,
+    helpers,
+    backendWorkspaces,
+    backendWorkspaceLoading,
+    backendWorkspaceError
+  ]
+);
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
 
