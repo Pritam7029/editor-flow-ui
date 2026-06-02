@@ -88,3 +88,12 @@ export async function removeWorkspaceMember(workspaceId, memberId) {
 
     return response.data;
 }
+
+export async function updateMyProfile(payload) {
+    const response = await apiRequest('/api/profile/me', {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+    });
+
+    return response.data.profile;
+}

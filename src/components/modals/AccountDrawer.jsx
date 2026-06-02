@@ -5,15 +5,17 @@ import { getAvatarInitials } from '../../utils/helpers';
 import { supabase } from '../../config/supabaseclient';
 
 export default function AccountDrawer({ isOpen, onClose, onOpenWorkspaceModal }) {
- const {
-  meta,
-  switchWorkspace,
-  deleteWorkspaceById,
-  backendWorkspaces,
-  backendWorkspaceLoading,
-  backendWorkspaceError,
-  deleteBackendWorkspaceById
-} = useAppContext();
+  const {
+   meta,
+   switchWorkspace,
+   deleteWorkspaceById,
+   backendWorkspaces,
+   backendWorkspaceLoading,
+   backendWorkspaceError,
+   deleteBackendWorkspaceById,
+   saveAccount,
+   joinOrCreateWorkspace
+ } = useAppContext();
   const currentWorkspace = useMemo(() => meta.workspaces.find((item) => item.id === meta.currentWorkspaceId), [meta]);
   const [form, setForm] = useState(meta.account);
   const [joinName, setJoinName] = useState('');

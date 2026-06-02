@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useReducer, useState } from 'react';
+import { supabase } from '../config/supabaseclient';
 import {
   loadBackendWorkspaceMeta,
   createBackendWorkspace,
@@ -24,6 +25,19 @@ import {
   updateWorkspaceFilePermissions,
   addWorkspaceFileComment
 } from '../services/fileApi';
+import { getWorkspaceMembers, getMyProfile, updateMyProfile } from '../services/workspaceApi';
+import {
+  getWorkspaceChat,
+  sendWorkspaceChatMessage,
+  createWorkspaceChatTeam,
+  clearWorkspaceChat
+} from '../services/chatApi';
+import {
+  getWorkspaceNotifications,
+  createWorkspaceNotification,
+  markWorkspaceNotificationRead,
+  clearWorkspaceNotifications
+} from '../services/notificationApi';
 import {
   loadMeta,
   saveMeta,
@@ -158,7 +172,23 @@ export function AppProvider({ children, session }) {
       }));
     };
 
-    const pushNotification = ({ icon, iconClass = 'mention-notif', title, sub, targetEditorId = null }) => {
+    const pushNotification = async ({ icon, iconClass = 'mention-notif', title, sub, targetEditorId = null }) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+
+      if (isBackend) {
+        try {
+          const payload = { icon, iconClass, title, sub, targetEditorId };
+          const notif = await createWorkspaceNotification(state.meta.currentWorkspaceId, payload);
+          updateWorkspace((current) => ({
+            ...current,
+            notifications: [notif, ...current.notifications],
+          }));
+        } catch (err) {
+          console.error('Failed to create backend notification:', err);
+        }
+        return;
+      }
+
       updateWorkspace((current) => ({
         ...current,
         notifications: [{ id: uid(), icon, iconClass, title, sub, targetEditorId, ts: Date.now(), read: false }, ...current.notifications],
@@ -519,8 +549,46 @@ export function AppProvider({ children, session }) {
       });
     };
 
-    const sendMessage = ({ text, senderId }) => {
+    const sendMessage = async ({ text, senderId }) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
       const senderName = getActorName(senderId);
+
+      if (isBackend) {
+        try {
+          const payload = {
+            text,
+            channel: state.workspace.activeChannel,
+            convType: state.workspace.activeConv.type,
+            recipientId: state.workspace.activeConv.type === 'dm' ? state.workspace.activeConv.id : null,
+            teamId: state.workspace.activeConv.type === 'team' ? state.workspace.activeConv.id : null
+          };
+          const message = await sendWorkspaceChatMessage(state.meta.currentWorkspaceId, payload);
+          
+          updateWorkspace((current) => {
+            const nextChat = structuredClone(current.chat);
+            if (current.activeConv.type === 'dm') {
+              nextChat.dm[current.activeConv.id] = nextChat.dm[current.activeConv.id] || EMPTY_CHAT_BUCKET();
+              nextChat.dm[current.activeConv.id][current.activeChannel].push(message);
+            } else if (current.activeConv.type === 'team') {
+              nextChat.teams[current.activeConv.id] = nextChat.teams[current.activeConv.id] || { name: 'Team', memberIds: [], ...EMPTY_CHAT_BUCKET() };
+              nextChat.teams[current.activeConv.id][current.activeChannel].push(message);
+            } else {
+              nextChat.global[current.activeChannel].push(message);
+            }
+            return { ...current, chat: nextChat };
+          });
+          
+          addMentionNotifications(text, senderName, {
+            icon: '💬',
+            iconClass: 'mention-notif',
+            getSubtext: (value) => `${value.slice(0, 80)}${value.length > 80 ? '…' : ''}`,
+          });
+        } catch (err) {
+          pushToast(err.message || 'Failed to send message', 'error');
+        }
+        return;
+      }
+
       updateWorkspace((current) => {
         const nextChat = structuredClone(current.chat);
         const message = { id: uid(), senderId, senderName, text, ts: Date.now() };
@@ -528,6 +596,7 @@ export function AppProvider({ children, session }) {
           nextChat.dm[current.activeConv.id] = nextChat.dm[current.activeConv.id] || EMPTY_CHAT_BUCKET();
           nextChat.dm[current.activeConv.id][current.activeChannel].push(message);
         } else if (current.activeConv.type === 'team') {
+          nextChat.teams[current.activeConv.id] = nextChat.teams[current.activeConv.id] || { name: 'Team', memberIds: [], ...EMPTY_CHAT_BUCKET() };
           nextChat.teams[current.activeConv.id][current.activeChannel].push(message);
         } else {
           nextChat.global[current.activeChannel].push(message);
@@ -541,7 +610,25 @@ export function AppProvider({ children, session }) {
       });
     };
 
-    const createTeam = (name, memberIds) => {
+    const createTeam = async (name, memberIds) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+
+      if (isBackend) {
+        try {
+          const team = await createWorkspaceChatTeam(state.meta.currentWorkspaceId, { name, memberIds });
+          updateWorkspace((current) => ({
+            ...current,
+            chat: { ...current.chat, teams: { ...current.chat.teams, [team.id]: team } },
+            activeConv: { type: 'team', id: team.id },
+            activeChannel: 'general',
+          }));
+          pushToast(`Team "${name}" created.`);
+        } catch (err) {
+          pushToast(err.message || 'Failed to create team', 'error');
+        }
+        return;
+      }
+
       const teamId = uid();
       updateWorkspace((current) => ({
         ...current,
@@ -552,7 +639,31 @@ export function AppProvider({ children, session }) {
       pushToast(`Team "${name}" created.`);
     };
 
-    const clearActiveChat = () => {
+    const clearActiveChat = async () => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+
+      if (isBackend) {
+        try {
+          const payload = {
+            convType: state.workspace.activeConv.type,
+            targetId: state.workspace.activeConv.type !== 'global' ? state.workspace.activeConv.id : null
+          };
+          await clearWorkspaceChat(state.meta.currentWorkspaceId, payload);
+          
+          updateWorkspace((current) => {
+            const nextChat = structuredClone(current.chat);
+            if (current.activeConv.type === 'dm') nextChat.dm[current.activeConv.id] = EMPTY_CHAT_BUCKET();
+            else if (current.activeConv.type === 'team') nextChat.teams[current.activeConv.id] = { ...nextChat.teams[current.activeConv.id], ...EMPTY_CHAT_BUCKET() };
+            else nextChat.global = EMPTY_CHAT_BUCKET();
+            return { ...current, chat: nextChat };
+          });
+          pushToast('Chat cleared.', 'error');
+        } catch (err) {
+          pushToast(err.message || 'Failed to clear chat', 'error');
+        }
+        return;
+      }
+
       updateWorkspace((current) => {
         const nextChat = structuredClone(current.chat);
         if (current.activeConv.type === 'dm') nextChat.dm[current.activeConv.id] = EMPTY_CHAT_BUCKET();
@@ -720,16 +831,70 @@ export function AppProvider({ children, session }) {
       pushToast('File access updated.');
     };
 
-    const markNotificationRead = (notificationId) => {
+    const markNotificationRead = async (notificationId) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+
+      if (isBackend) {
+        try {
+          await markWorkspaceNotificationRead(state.meta.currentWorkspaceId, notificationId);
+        } catch (err) {
+          console.error('Failed to mark notification read:', err);
+        }
+      }
+
       updateWorkspace((current) => ({
         ...current,
         notifications: current.notifications.map((item) => item.id === notificationId ? { ...item, read: true } : item),
       }));
     };
 
-    const clearNotifications = () => updateWorkspace((current) => ({ ...current, notifications: [] }));
+    const clearNotifications = async () => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
 
-    const saveAccount = (payload) => {
+      if (isBackend) {
+        try {
+          await clearWorkspaceNotifications(state.meta.currentWorkspaceId);
+        } catch (err) {
+          console.error('Failed to clear notifications:', err);
+        }
+      }
+
+      updateWorkspace((current) => ({ ...current, notifications: [] }));
+    };
+
+    const saveAccount = async (payload) => {
+      const isBackend = !!session;
+
+      if (isBackend) {
+        try {
+          const profile = await updateMyProfile({
+            name: payload.name,
+            color: payload.color,
+            role: payload.role,
+            bio: payload.bio,
+            status: payload.status,
+            avatarUrl: payload.avatarUrl
+          });
+
+          updateMeta((current) => ({
+            ...current,
+            account: {
+              ...current.account,
+              name: profile.full_name || payload.name,
+              color: profile.color || payload.color,
+              role: profile.role || payload.role,
+              bio: profile.bio || payload.bio,
+              status: profile.status || payload.status,
+              avatarUrl: profile.avatar_url || payload.avatarUrl
+            }
+          }));
+          pushToast('Profile updated.');
+        } catch (err) {
+          pushToast(err.message || 'Failed to update profile', 'error');
+        }
+        return;
+      }
+
       updateMeta((current) => ({ ...current, account: { ...DEFAULT_ACCOUNT, ...current.account, ...payload } }));
       pushToast('Profile updated.');
     };
@@ -895,6 +1060,57 @@ export function AppProvider({ children, session }) {
     };
   },  [state, backendWorkspaces]);
 
+  const fetchWorkspaceTasksAndFiles = async (workspaceId) => {
+    try {
+      const [columns, tasks, files] = await Promise.all([
+        getWorkspaceColumns(workspaceId),
+        getWorkspaceTasks(workspaceId),
+        getWorkspaceFiles(workspaceId)
+      ]);
+      dispatch({
+        type: 'UPDATE_WORKSPACE',
+        updater: (current) => ({
+          ...current,
+          columns: columns || [],
+          tasks: tasks || [],
+          files: files || []
+        })
+      });
+    } catch (err) {
+      console.error('Failed to refetch tasks and files:', err);
+    }
+  };
+
+  const fetchWorkspaceChatMessages = async (workspaceId) => {
+    try {
+      const chatData = await getWorkspaceChat(workspaceId);
+      dispatch({
+        type: 'UPDATE_WORKSPACE',
+        updater: (current) => ({
+          ...current,
+          chat: chatData?.chat || { global: { general: [], links: [], feedback: [] }, dm: {}, teams: {} }
+        })
+      });
+    } catch (err) {
+      console.error('Failed to refetch chat messages:', err);
+    }
+  };
+
+  const fetchWorkspaceNotificationsData = async (workspaceId) => {
+    try {
+      const notifications = await getWorkspaceNotifications(workspaceId);
+      dispatch({
+        type: 'UPDATE_WORKSPACE',
+        updater: (current) => ({
+          ...current,
+          notifications: notifications || []
+        })
+      });
+    } catch (err) {
+      console.error('Failed to refetch notifications:', err);
+    }
+  };
+
   async function refreshBackendWorkspaces() {
   setBackendWorkspaceLoading(true);
   setBackendWorkspaceError(null);
@@ -962,6 +1178,31 @@ useEffect(() => {
 
   if (!userId) return;
 
+  // Load backend profile
+  getMyProfile().then((data) => {
+    if (data && data.profile) {
+      const profile = data.profile;
+      dispatch({
+        type: 'REPLACE_META',
+        meta: {
+          ...state.meta,
+          account: {
+            id: profile.id,
+            name: profile.full_name || session.user.email.split('@')[0],
+            email: profile.email,
+            color: profile.color || '#8b5cf6',
+            role: profile.role || 'Workspace Admin',
+            bio: profile.bio || '',
+            avatarUrl: profile.avatar_url || null,
+            status: profile.status || 'active'
+          }
+        }
+      });
+    }
+  }).catch(err => {
+    console.error('Failed to load backend profile:', err);
+  });
+
   refreshBackendWorkspaces().catch((error) => {
     console.error('Failed to load backend workspaces:', error);
   });
@@ -985,24 +1226,115 @@ useEffect(() => {
       Promise.all([
         getWorkspaceColumns(activeId),
         getWorkspaceTasks(activeId),
-        getWorkspaceFiles(activeId)
-      ]).then(([columns, tasks, files]) => {
+        getWorkspaceFiles(activeId),
+        getWorkspaceMembers(activeId),
+        getWorkspaceChat(activeId),
+        getWorkspaceNotifications(activeId)
+      ]).then(([columns, tasks, files, members, chatData, notifications]) => {
         if (!active) return;
+        const editors = (members || []).map(m => ({
+          id: m.user_id,
+          name: m.profile?.full_name || m.profile?.email?.split('@')[0] || 'Unknown',
+          email: m.profile?.email || '',
+          color: m.profile?.color || '#8b5cf6',
+          role: m.role,
+          status: m.status || 'active',
+          avatarUrl: m.profile?.avatar_url || null
+        }));
+
         dispatch({
           type: 'UPDATE_WORKSPACE',
           updater: (current) => ({
             ...current,
             columns: columns || [],
             tasks: tasks || [],
-            files: files || []
+            files: files || [],
+            editors: editors,
+            chat: chatData?.chat || { global: { general: [], links: [], feedback: [] }, dm: {}, teams: {} },
+            notifications: notifications || []
           })
         });
       }).catch(err => {
         if (!active) return;
-        console.error('Failed to sync tasks/columns/files with backend:', err);
+        console.error('Failed to sync tasks/columns/files/editors/chat/notifications with backend:', err);
       });
       return () => {
         active = false;
+      };
+    }
+  }
+}, [state.meta.currentWorkspaceId, backendWorkspaces]);
+
+useEffect(() => {
+  if (state.meta.currentWorkspaceId && backendWorkspaces.length > 0) {
+    const activeId = state.meta.currentWorkspaceId;
+    const isBackend = backendWorkspaces.some((ws) => ws.id === activeId);
+    if (isBackend) {
+      console.log(`Setting up Supabase Realtime channel for workspace: ${activeId}`);
+      
+      const channel = supabase
+        .channel(`ws-realtime-${activeId}`)
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'task_columns',
+          filter: `workspace_id=eq.${activeId}`
+        }, () => {
+          fetchWorkspaceTasksAndFiles(activeId);
+        })
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'tasks',
+          filter: `workspace_id=eq.${activeId}`
+        }, () => {
+          fetchWorkspaceTasksAndFiles(activeId);
+        })
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'task_comments',
+          filter: `workspace_id=eq.${activeId}`
+        }, () => {
+          fetchWorkspaceTasksAndFiles(activeId);
+        })
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'workspace_files',
+          filter: `workspace_id=eq.${activeId}`
+        }, () => {
+          fetchWorkspaceTasksAndFiles(activeId);
+        })
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'file_comments',
+          filter: `workspace_id=eq.${activeId}`
+        }, () => {
+          fetchWorkspaceTasksAndFiles(activeId);
+        })
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'chat_messages',
+          filter: `workspace_id=eq.${activeId}`
+        }, () => {
+          fetchWorkspaceChatMessages(activeId);
+        })
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'workspace_notifications',
+          filter: `workspace_id=eq.${activeId}`
+        }, () => {
+          fetchWorkspaceNotificationsData(activeId);
+        })
+        .subscribe();
+
+      return () => {
+        console.log(`Removing Supabase Realtime channel for workspace: ${activeId}`);
+        supabase.removeChannel(channel);
       };
     }
   }
