@@ -3,6 +3,7 @@ import { supabase } from './config/supabaseclient';
 import { AppProvider } from './context/AppContext';
 import AppShell from './components/layout/AppShell';
 import LoginPage from './pages/LoginPage';
+import AcceptInvitePage from './pages/AcceptInvitePage';
 
 export default function App() {
   const [session, setSession] = useState(null);
@@ -29,6 +30,12 @@ export default function App() {
 
   if (!session) {
     return <LoginPage />;
+  }
+
+  const isAcceptInvitePath = window.location.pathname === '/accept-invite' || window.location.search.includes('token=');
+
+  if (isAcceptInvitePath) {
+    return <AcceptInvitePage session={session} />;
   }
 
   return (

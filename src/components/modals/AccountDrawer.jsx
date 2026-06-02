@@ -5,7 +5,15 @@ import { getAvatarInitials } from '../../utils/helpers';
 import { supabase } from '../../config/supabaseclient';
 
 export default function AccountDrawer({ isOpen, onClose, onOpenWorkspaceModal }) {
-  const { meta, saveAccount, deleteWorkspaceById, switchWorkspace, joinOrCreateWorkspace } = useAppContext();
+ const {
+  meta,
+  switchWorkspace,
+  deleteWorkspaceById,
+  backendWorkspaces,
+  backendWorkspaceLoading,
+  backendWorkspaceError,
+  deleteBackendWorkspaceById
+} = useAppContext();
   const currentWorkspace = useMemo(() => meta.workspaces.find((item) => item.id === meta.currentWorkspaceId), [meta]);
   const [form, setForm] = useState(meta.account);
   const [joinName, setJoinName] = useState('');
@@ -18,6 +26,13 @@ export default function AccountDrawer({ isOpen, onClose, onOpenWorkspaceModal })
   }, [isOpen, meta.account]);
 
   if (!isOpen) return null;
+ const visibleWorkspaces =
+  backendWorkspaces && backendWorkspaces.length > 0
+    ? backendWorkspaces
+    : meta.workspaces || [];
+
+const usingBackendWorkspaces =
+  backendWorkspaces && backendWorkspaces.length > 0; 
 
   return (
     <div className="drawer-overlay" onClick={onClose}>
@@ -70,15 +85,75 @@ export default function AccountDrawer({ isOpen, onClose, onOpenWorkspaceModal })
 
           <section className="form-stack">
             <h4>Workspaces</h4>
-            {meta.workspaces.map((workspace) => (
-              <div className="workspace-row" key={workspace.id}>
-                <span>{workspace.id === meta.currentWorkspaceId ? '✦' : '🏢'} {workspace.name}</span>
-                <div className="card-actions">
-                  {workspace.id === meta.currentWorkspaceId ? <button className="ghost-button small" onClick={() => onOpenWorkspaceModal('rename')}>Rename</button> : <button className="ghost-button small" onClick={() => switchWorkspace(workspace.id)}>Switch</button>}
-                  {meta.workspaces.length > 1 && <button className="danger-button small" onClick={() => deleteWorkspaceById(workspace.id)}>Delete</button>}
-                </div>
-              </div>
-            ))}
+                {backendWorkspaceLoading && (
+  <div className="muted-text">Loading workspaces...</div>
+)}
+
+{backendWorkspaceError && (
+  <div className="form-error">{backendWorkspaceError}</div>
+)}
+
+{visibleWorkspaces.map((workspace) => (
+  <div
+    className="workspace-row"
+    key={workspace.id}
+    role="button"
+    tabIndex={0}
+    onClick={() => switchWorkspace(workspace.id)}
+    onKeyDown={(event) => {
+      if (event.key === 'Enter') {
+        switchWorkspace(workspace.id);
+      }
+    }}
+  >
+    <span>
+      {workspace.id === meta.currentWorkspaceId ? '✦' : '🏢'} {workspace.name}
+    </span>
+
+    <div className="card-actions">
+      {workspace.id === meta.currentWorkspaceId && (
+        <button
+          className="ghost-button small"
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenWorkspaceModal('rename');
+          }}
+        >
+          Rename
+        </button>
+      )}
+
+      {usingBackendWorkspaces && backendWorkspaces.length > 1 && (
+        <button
+          className="danger-button small"
+          onClick={(event) => {
+            event.stopPropagation();
+            if (window.confirm(`Are you sure you want to delete "${workspace.name}"?`)) {
+              deleteBackendWorkspaceById(workspace.id);
+            }
+          }}
+        >
+          Delete
+        </button>
+      )}
+
+      {!usingBackendWorkspaces && meta.workspaces.length > 1 && (
+        <button
+          className="danger-button small"
+          onClick={(event) => {
+            event.stopPropagation();
+            if (window.confirm(`Are you sure you want to delete "${workspace.name}"?`)) {
+              deleteWorkspaceById(workspace.id);
+            }
+          }}
+        >
+          Delete
+        </button>
+      )}
+    </div>
+  </div>
+))}
+              
             <div className="card-actions wrap-actions">
               <button className="ghost-button" onClick={() => onOpenWorkspaceModal('create')}>＋ New Workspace</button>
               <div className="inline-row grow">

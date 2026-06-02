@@ -48,3 +48,43 @@ export async function deleteWorkspace(workspaceId) {
 
     return response.data;
 }
+
+export async function inviteMemberToWorkspace(workspaceId, email, role) {
+    const response = await apiRequest(`/api/workspaces/${workspaceId}/invites`, {
+        method: 'POST',
+        body: JSON.stringify({ email, role })
+    });
+
+    return response.data;
+}
+
+export async function getInviteDetails(token) {
+    const response = await apiRequest(`/api/invites/${token}`);
+
+    return response.data.invite;
+}
+
+export async function acceptWorkspaceInvite(token) {
+    const response = await apiRequest(`/api/invites/${token}/accept`, {
+        method: 'POST'
+    });
+
+    return response.data;
+}
+
+export async function updateWorkspaceMemberRole(workspaceId, memberId, role) {
+    const response = await apiRequest(`/api/workspaces/${workspaceId}/members/${memberId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ role })
+    });
+
+    return response.data;
+}
+
+export async function removeWorkspaceMember(workspaceId, memberId) {
+    const response = await apiRequest(`/api/workspaces/${workspaceId}/members/${memberId}`, {
+        method: 'DELETE'
+    });
+
+    return response.data;
+}

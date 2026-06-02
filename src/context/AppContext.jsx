@@ -6,6 +6,25 @@ import {
   removeBackendWorkspace
 } from '../services/backendWorkspaceBridge';
 import {
+  getWorkspaceColumns,
+  createWorkspaceColumn,
+  updateWorkspaceColumn,
+  deleteWorkspaceColumn,
+  reorderWorkspaceColumns,
+  getWorkspaceTasks,
+  createWorkspaceTask,
+  updateWorkspaceTask,
+  deleteWorkspaceTask,
+  addWorkspaceTaskComment
+} from '../services/taskApi';
+import {
+  getWorkspaceFiles,
+  uploadWorkspaceFiles,
+  deleteWorkspaceFile,
+  updateWorkspaceFilePermissions,
+  addWorkspaceFileComment
+} from '../services/fileApi';
+import {
   loadMeta,
   saveMeta,
   loadWorkspaceState,
@@ -191,7 +210,19 @@ export function AppProvider({ children, session }) {
       pushToast(`${editor?.name || 'Editor'} removed.`, 'error');
     };
 
-    const addTask = (payload) => {
+    const addTask = async (payload) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          const task = await createWorkspaceTask(state.meta.currentWorkspaceId, payload);
+          updateWorkspace((current) => ({ ...current, tasks: [...current.tasks, task] }));
+          pushToast(`Task "${task.title}" added.`);
+        } catch (err) {
+          pushToast(err.message || 'Failed to add task', 'error');
+        }
+        return;
+      }
+
       const task = { id: uid(), createdAt: Date.now(), comments: [], ...payload };
       updateWorkspace((current) => ({ ...current, tasks: [...current.tasks, task] }));
       if (task.assigneeId) {
@@ -209,7 +240,21 @@ export function AppProvider({ children, session }) {
       pushToast(`Task "${task.title}" added.`);
     };
 
-    const updateTask = (taskId, updates) => {
+    const updateTask = async (taskId, updates) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          const updatedTask = await updateWorkspaceTask(state.meta.currentWorkspaceId, taskId, updates);
+          updateWorkspace((current) => ({
+            ...current,
+            tasks: current.tasks.map((task) => (task.id === taskId ? { ...task, ...updatedTask } : task)),
+          }));
+        } catch (err) {
+          pushToast(err.message || 'Failed to update task', 'error');
+        }
+        return;
+      }
+
       const currentTask = state.workspace.tasks.find((task) => task.id === taskId);
       updateWorkspace((current) => ({
         ...current,
@@ -229,12 +274,42 @@ export function AppProvider({ children, session }) {
       }
     };
 
-    const deleteTaskById = (taskId) => {
+    const deleteTaskById = async (taskId) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          await deleteWorkspaceTask(state.meta.currentWorkspaceId, taskId);
+          updateWorkspace((current) => ({ ...current, tasks: current.tasks.filter((task) => task.id !== taskId) }));
+          pushToast('Task deleted.', 'error');
+        } catch (err) {
+          pushToast(err.message || 'Failed to delete task', 'error');
+        }
+        return;
+      }
+
       updateWorkspace((current) => ({ ...current, tasks: current.tasks.filter((task) => task.id !== taskId) }));
       pushToast('Task deleted.', 'error');
     };
 
-    const addTaskComment = (taskId, text, senderId) => {
+    const addTaskComment = async (taskId, text, senderId) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          const comment = await addWorkspaceTaskComment(state.meta.currentWorkspaceId, taskId, text);
+          updateWorkspace((current) => ({
+            ...current,
+            tasks: current.tasks.map((task) => task.id === taskId ? {
+              ...task,
+              comments: [...task.comments, comment],
+            } : task),
+          }));
+          pushToast('Comment added.');
+        } catch (err) {
+          pushToast(err.message || 'Failed to add comment', 'error');
+        }
+        return;
+      }
+
       const authorName = getActorName(senderId);
       updateWorkspace((current) => ({
         ...current,
@@ -252,7 +327,21 @@ export function AppProvider({ children, session }) {
       pushToast('Comment added.');
     };
 
-    const addColumn = (payload) => {
+    const addColumn = async (payload) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          const key = `col_${uid()}`;
+          const column = await createWorkspaceColumn(state.meta.currentWorkspaceId, { key, ...payload });
+          updateWorkspace((current) => ({ ...current, columns: [...current.columns, column] }));
+          pushToast('Column added.');
+          return column.key;
+        } catch (err) {
+          pushToast(err.message || 'Failed to add status column', 'error');
+          return null;
+        }
+      }
+
       const key = `col_${uid()}`;
       updateWorkspace((current) => ({
         ...current,
@@ -262,7 +351,24 @@ export function AppProvider({ children, session }) {
       return key;
     };
 
-    const updateColumn = (columnKey, updates) => {
+    const updateColumn = async (columnKey, updates) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          const col = state.workspace.columns.find((c) => c.key === columnKey);
+          if (!col) return;
+          const updatedCol = await updateWorkspaceColumn(state.meta.currentWorkspaceId, col.id, updates);
+          updateWorkspace((current) => ({
+            ...current,
+            columns: current.columns.map((column) => (column.key === columnKey ? { ...column, ...updatedCol } : column)),
+          }));
+          pushToast('Column updated.');
+        } catch (err) {
+          pushToast(err.message || 'Failed to update column', 'error');
+        }
+        return;
+      }
+
       updateWorkspace((current) => ({
         ...current,
         columns: current.columns.map((column) => (column.key === columnKey ? { ...column, ...updates } : column)),
@@ -270,7 +376,32 @@ export function AppProvider({ children, session }) {
       pushToast('Column updated.');
     };
 
-    const deleteColumnByKey = (columnKey) => {
+    const deleteColumnByKey = async (columnKey) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          const col = state.workspace.columns.find((c) => c.key === columnKey);
+          if (!col) return;
+          await deleteWorkspaceColumn(state.meta.currentWorkspaceId, col.id);
+          
+          const refreshedCols = await getWorkspaceColumns(state.meta.currentWorkspaceId);
+          const refreshedTasks = await getWorkspaceTasks(state.meta.currentWorkspaceId);
+          
+          dispatch({
+            type: 'UPDATE_WORKSPACE',
+            updater: (current) => ({
+              ...current,
+              columns: refreshedCols || [],
+              tasks: refreshedTasks || []
+            })
+          });
+          pushToast('Column deleted.');
+        } catch (err) {
+          pushToast(err.message || 'Failed to delete column', 'error');
+        }
+        return;
+      }
+
       updateWorkspace((current) => {
         const fallback = current.columns.find((column) => column.key !== columnKey);
         if (!fallback) return current;
@@ -283,7 +414,38 @@ export function AppProvider({ children, session }) {
       pushToast('Column deleted.');
     };
 
-    const moveColumn = (sourceKey, targetIndex) => {
+    const moveColumn = async (sourceKey, targetIndex) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          updateWorkspace((current) => {
+            const list = [...current.columns];
+            const sourceIndex = list.findIndex((column) => column.key === sourceKey);
+            if (sourceIndex < 0) return current;
+            const [removed] = list.splice(sourceIndex, 1);
+            list.splice(targetIndex, 0, removed);
+            return { ...current, columns: list };
+          });
+
+          const reorderedCols = [...state.workspace.columns];
+          const sourceIndex = reorderedCols.findIndex((c) => c.key === sourceKey);
+          if (sourceIndex >= 0) {
+            const [removed] = reorderedCols.splice(sourceIndex, 1);
+            reorderedCols.splice(targetIndex, 0, removed);
+          }
+          const keys = reorderedCols.map(c => c.key);
+          await reorderWorkspaceColumns(state.meta.currentWorkspaceId, keys);
+        } catch (err) {
+          pushToast(err.message || 'Failed to reorder columns', 'error');
+          const refreshed = await getWorkspaceColumns(state.meta.currentWorkspaceId);
+          dispatch({
+            type: 'UPDATE_WORKSPACE',
+            updater: (current) => ({ ...current, columns: refreshed || [] })
+          });
+        }
+        return;
+      }
+
       updateWorkspace((current) => {
         const list = [...current.columns];
         const sourceIndex = list.findIndex((column) => column.key === sourceKey);
@@ -294,7 +456,42 @@ export function AppProvider({ children, session }) {
       });
     };
 
-    const moveTask = (taskId, targetStatus, targetIndex = null) => {
+    const moveTask = async (taskId, targetStatus, targetIndex = null) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          updateWorkspace((current) => {
+            const moving = current.tasks.find((task) => task.id === taskId);
+            if (!moving) return current;
+            const remaining = current.tasks.filter((task) => task.id !== taskId);
+            const moved = { ...moving, status: targetStatus, position: targetIndex || 0 };
+            const next = [...remaining];
+            if (targetIndex == null) {
+              next.push(moved);
+            } else {
+              next.splice(targetIndex, 0, moved);
+            }
+            return {
+              ...current,
+              tasks: next.map((t, idx) => ({ ...t, position: idx }))
+            };
+          });
+
+          await updateWorkspaceTask(state.meta.currentWorkspaceId, taskId, {
+            status: targetStatus,
+            position: targetIndex || 0
+          });
+        } catch (err) {
+          pushToast(err.message || 'Failed to move task', 'error');
+          const refreshed = await getWorkspaceTasks(state.meta.currentWorkspaceId);
+          dispatch({
+            type: 'UPDATE_WORKSPACE',
+            updater: (current) => ({ ...current, tasks: refreshed || [] })
+          });
+        }
+        return;
+      }
+
       updateWorkspace((current) => {
         const moving = current.tasks.find((task) => task.id === taskId);
         if (!moving) return current;
@@ -398,7 +595,7 @@ export function AppProvider({ children, session }) {
         reader.readAsDataURL(file);
       });
 
-      const files = await Promise.all([...fileList].map(async (file) => {
+      const filesData = await Promise.all([...fileList].map(async (file) => {
         const fileId = uid();
         const useBase64 = file.type.startsWith('image/') && file.size <= IMAGE_PERSIST_LIMIT;
         let dataUrl = null;
@@ -417,18 +614,54 @@ export function AppProvider({ children, session }) {
           type: file.type || 'application/octet-stream',
           size: file.size,
           dataUrl, // null for large/non-image files (they use Object URL instead)
-          uploadedBy: uploaderId,
-          uploadedAt: Date.now(),
-          comments: [],
           visibleTo: [],
         };
       }));
 
-      updateWorkspace((current) => ({ ...current, files: [...current.files, ...files] }));
-      pushToast(`${files.length} file(s) uploaded.`);
+      if (isBackend) {
+        try {
+          const uploaded = await uploadWorkspaceFiles(state.meta.currentWorkspaceId, filesData);
+          updateWorkspace((current) => ({
+            ...current,
+            files: [...current.files, ...uploaded]
+          }));
+          pushToast(`${uploaded.length} file(s) uploaded.`);
+        } catch (err) {
+          pushToast(err.message || 'Failed to upload files', 'error');
+        }
+        return;
+      }
+
+      const localFiles = filesData.map(f => ({
+        ...f,
+        uploadedBy: uploaderId,
+        uploadedAt: Date.now(),
+        comments: [],
+      }));
+
+      updateWorkspace((current) => ({ ...current, files: [...current.files, ...localFiles] }));
+      pushToast(`${localFiles.length} file(s) uploaded.`);
     };
 
-    const addFileComment = (fileId, text, senderId, timestamp = null) => {
+    const addFileComment = async (fileId, text, senderId, timestamp = null) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          const comment = await addWorkspaceFileComment(state.meta.currentWorkspaceId, fileId, text, timestamp);
+          updateWorkspace((current) => ({
+            ...current,
+            files: current.files.map((file) => file.id === fileId ? {
+              ...file,
+              comments: [...file.comments, comment]
+            } : file)
+          }));
+          pushToast('Feedback added.');
+        } catch (err) {
+          pushToast(err.message || 'Failed to add comment', 'error');
+        }
+        return;
+      }
+
       const authorName = getActorName(senderId);
       updateWorkspace((current) => ({
         ...current,
@@ -446,13 +679,40 @@ export function AppProvider({ children, session }) {
       pushToast('Feedback added.');
     };
 
-    const deleteFileById = (fileId) => {
+    const deleteFileById = async (fileId) => {
       revokeObjectUrl(fileId); // free browser memory for Object URL files
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          await deleteWorkspaceFile(state.meta.currentWorkspaceId, fileId);
+          updateWorkspace((current) => ({ ...current, files: current.files.filter((file) => file.id !== fileId) }));
+          pushToast('File deleted.', 'error');
+        } catch (err) {
+          pushToast(err.message || 'Failed to delete file', 'error');
+        }
+        return;
+      }
+
       updateWorkspace((current) => ({ ...current, files: current.files.filter((file) => file.id !== fileId) }));
       pushToast('File deleted.', 'error');
     };
 
-    const updateFilePermissions = (fileId, visibleTo) => {
+    const updateFilePermissions = async (fileId, visibleTo) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          const updatedVisibleTo = await updateWorkspaceFilePermissions(state.meta.currentWorkspaceId, fileId, visibleTo);
+          updateWorkspace((current) => ({
+            ...current,
+            files: current.files.map((file) => (file.id === fileId ? { ...file, visibleTo: updatedVisibleTo } : file))
+          }));
+          pushToast('File access updated.');
+        } catch (err) {
+          pushToast(err.message || 'Failed to update access permissions', 'error');
+        }
+        return;
+      }
+
       updateWorkspace((current) => ({
         ...current,
         files: current.files.map((file) => (file.id === fileId ? { ...file, visibleTo } : file)),
@@ -519,15 +779,49 @@ export function AppProvider({ children, session }) {
       pushToast(`Joined workspace successfully.`);
     };
 
-    const switchWorkspace = (workspaceId) => {
-      const target = state.meta.workspaces.find((workspace) => workspace.id === workspaceId);
-      if (!target) return;
-      dispatch({ type: 'REPLACE_META', meta: { ...state.meta, currentWorkspaceId: workspaceId } });
-      dispatch({ type: 'REPLACE_WORKSPACE', workspace: loadWorkspaceState(workspaceId) });
-      pushToast(`Switched to "${target.name}".`);
-    };
 
-    const renameWorkspace = (workspaceId, name) => {
+    const switchWorkspace = (workspaceId) => {
+  const localWorkspaces = state.meta.workspaces || [];
+  const backendList = backendWorkspaces || [];
+
+  const target =
+    localWorkspaces.find((workspace) => workspace.id === workspaceId) ||
+    backendList.find((workspace) => workspace.id === workspaceId);
+
+  if (!target) return;
+
+  const alreadyExistsLocally = localWorkspaces.some(
+    (workspace) => workspace.id === workspaceId
+  );
+
+  const nextMeta = {
+    ...state.meta,
+    currentWorkspaceId: workspaceId,
+    workspaces: alreadyExistsLocally
+      ? localWorkspaces
+      : [
+          ...localWorkspaces,
+          {
+            id: target.id,
+            name: target.name,
+            createdAt: Date.now()
+          }
+        ]
+  };
+
+  const nextWorkspace = loadWorkspaceState(workspaceId);
+
+  if (!nextWorkspace.ownerId && state.meta.account) {
+    nextWorkspace.ownerId = state.meta.account.id;
+    saveWorkspaceState(workspaceId, nextWorkspace);
+  }
+
+  dispatch({ type: 'REPLACE_META', meta: nextMeta });
+  dispatch({ type: 'REPLACE_WORKSPACE', workspace: nextWorkspace });
+
+  pushToast(`Switched to "${target.name}".`);
+};
+      const renameWorkspace = (workspaceId, name) => {
       updateMeta((current) => ({
         ...current,
         workspaces: current.workspaces.map((workspace) => workspace.id === workspaceId ? { ...workspace, name } : workspace),
@@ -599,7 +893,7 @@ export function AppProvider({ children, session }) {
       setPanelWidth,
       createColumnDraft,
     };
-  }, [state]);
+  },  [state, backendWorkspaces]);
 
   async function refreshBackendWorkspaces() {
   setBackendWorkspaceLoading(true);
@@ -621,18 +915,44 @@ export function AppProvider({ children, session }) {
 async function addBackendWorkspace(name) {
   const workspace = await createBackendWorkspace(name);
   await refreshBackendWorkspaces();
+  if (workspace && workspace.id) {
+    helpers.switchWorkspace(workspace.id);
+  }
   return workspace;
 }
 
 async function editBackendWorkspace(workspaceId, name) {
   const workspace = await renameBackendWorkspace(workspaceId, name);
   await refreshBackendWorkspaces();
+  dispatch({
+    type: 'REPLACE_META',
+    meta: {
+      ...state.meta,
+      workspaces: state.meta.workspaces.map((ws) =>
+        ws.id === workspaceId ? { ...ws, name } : ws
+      )
+    }
+  });
   return workspace;
 }
 
 async function deleteBackendWorkspaceById(workspaceId) {
+  if (backendWorkspaces.length <= 1) {
+    helpers.pushToast('Cannot delete the only remaining workspace.', 'error');
+    return false;
+  }
+
   await removeBackendWorkspace(workspaceId);
-  await refreshBackendWorkspaces();
+  const refreshed = await refreshBackendWorkspaces();
+
+  if (workspaceId === state.meta.currentWorkspaceId && refreshed && refreshed.length > 0) {
+    const nextWorkspace = refreshed.find(w => w.id !== workspaceId) || refreshed[0];
+    if (nextWorkspace) {
+      helpers.switchWorkspace(nextWorkspace.id);
+    }
+  }
+
+  helpers.pushToast('Workspace deleted.', 'error');
   return true;
 }
 
@@ -646,6 +966,47 @@ useEffect(() => {
     console.error('Failed to load backend workspaces:', error);
   });
 }, [session && session.user && session.user.id]);
+
+useEffect(() => {
+  if (backendWorkspaces && backendWorkspaces.length > 0) {
+    const hasActiveBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+    if (!hasActiveBackend) {
+      helpers.switchWorkspace(backendWorkspaces[0].id);
+    }
+  }
+}, [backendWorkspaces, state.meta.currentWorkspaceId]);
+
+useEffect(() => {
+  if (state.meta.currentWorkspaceId && backendWorkspaces.length > 0) {
+    const activeId = state.meta.currentWorkspaceId;
+    const isBackend = backendWorkspaces.some((ws) => ws.id === activeId);
+    if (isBackend) {
+      let active = true;
+      Promise.all([
+        getWorkspaceColumns(activeId),
+        getWorkspaceTasks(activeId),
+        getWorkspaceFiles(activeId)
+      ]).then(([columns, tasks, files]) => {
+        if (!active) return;
+        dispatch({
+          type: 'UPDATE_WORKSPACE',
+          updater: (current) => ({
+            ...current,
+            columns: columns || [],
+            tasks: tasks || [],
+            files: files || []
+          })
+        });
+      }).catch(err => {
+        if (!active) return;
+        console.error('Failed to sync tasks/columns/files with backend:', err);
+      });
+      return () => {
+        active = false;
+      };
+    }
+  }
+}, [state.meta.currentWorkspaceId, backendWorkspaces]);
 
  const value = useMemo(
   () => ({

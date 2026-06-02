@@ -1,70 +1,94 @@
 import { useEffect, useState } from 'react';
 import Modal from '../common/Modal';
 import { useAppContext } from '../../context/AppContext';
-import { COLOR_OPTIONS } from '../../utils/constants';
-import { API_BASE_URL } from '../../config/api';
-const EMPTY = { name: '', email: '', role: '', status: 'active', color: '#8b5cf6' };
+import { inviteMemberToWorkspace } from '../../services/workspaceApi';
+
+const EMPTY = { email: '', role: 'editor' };
 
 export default function EditorModal({ isOpen, onClose }) {
-  const { addEditor, meta } = useAppContext();
+  const { meta, pushToast } = useAppContext();
   const [form, setForm] = useState(EMPTY);
   const [sending, setSending] = useState(false);
+  const [error, setError] = useState('');
 
-  useEffect(() => { if (isOpen) setForm(EMPTY); }, [isOpen]);
+  useEffect(() => {
+    if (isOpen) {
+      setForm(EMPTY);
+      setError('');
+    }
+  }, [isOpen]);
+
+  const handleSubmit = async () => {
+    const email = form.email.trim();
+    if (!email) {
+      setError('Please provide a valid email address.');
+      return;
+    }
+
+    setSending(true);
+    setError('');
+
+    try {
+      await inviteMemberToWorkspace(meta.currentWorkspaceId, email, form.role);
+      if (pushToast) {
+        pushToast(`Invitation sent successfully to ${email}!`);
+      } else {
+        alert(`Invitation sent successfully to ${email}!`);
+      }
+      onClose();
+    } catch (err) {
+      console.error(err);
+      setError(err.message || 'Failed to send workspace invitation.');
+    } finally {
+      setSending(false);
+    }
+  };
 
   return (
-    <Modal title="Add New Editor" isOpen={isOpen} onClose={onClose}>
+    <Modal title="Invite New Member" isOpen={isOpen} onClose={onClose}>
       <div className="form-stack">
-        <input className="text-input" placeholder="Full name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
-        <input className="text-input" type="email" placeholder="Email address" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
-        <input className="text-input" placeholder="Role" value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })} />
-        <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}>
-          <option value="active">🟢 Active</option>
-          <option value="idle">🟡 Idle</option>
-          <option value="offline">⚫ Offline</option>
-        </select>
-        <div className="color-picker">
-          {COLOR_OPTIONS.map((color) => (
-            <button type="button" key={color} className={`color-dot ${form.color === color ? 'color-dot-active' : ''}`} style={{ background: color }} onClick={() => setForm({ ...form, color })} />
-          ))}
+        <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '0 0 8px', lineHeight: 1.5 }}>
+          Invite editors, administrators, or viewers to collaborate in this workspace. They will receive an email invitation with a secure link to join.
+        </p>
+
+        <div>
+          <label style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '6px' }}>Email Address</label>
+          <input
+            className="text-input"
+            type="email"
+            placeholder="colleague@company.com"
+            value={form.email}
+            onChange={(event) => setForm({ ...form, email: event.target.value })}
+            disabled={sending}
+            required
+          />
         </div>
-        <div className="modal-actions">
+
+        <div>
+          <label style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '6px' }}>Access Role</label>
+          <select
+            value={form.role}
+            onChange={(event) => setForm({ ...form, role: event.target.value })}
+            disabled={sending}
+            style={{ width: '100%', padding: '10px 12px', borderRadius: '14px', border: '1px solid var(--border)', background: '#080c14', color: 'var(--text-primary)' }}
+          >
+            <option value="editor">Editor (Can manage tasks & files)</option>
+            <option value="admin">Admin (Full permissions except deletion)</option>
+            <option value="viewer">Viewer (Read-only access)</option>
+          </select>
+        </div>
+
+        {error && (
+          <div className="form-error" style={{ fontSize: '13px', margin: 0 }}>
+            {error}
+          </div>
+        )}
+
+        <div className="modal-actions" style={{ marginTop: '12px' }}>
           <button className="ghost-button" onClick={onClose} disabled={sending}>Cancel</button>
-          <button className="primary-button" disabled={sending} onClick={async () => {
-            if (!form.name.trim() || !form.email.trim()) {
-              alert('Please provide both name and email.');
-              return;
-            }
-            
-            setSending(true);
-            const currentWorkspace = meta.workspaces.find(w => w.id === meta.currentWorkspaceId);
-            const workspaceName = currentWorkspace?.name || 'EditorFlow Workspace';
-            const inviteLink = `${window.location.origin}/?invite=${meta.currentWorkspaceId}`;
-            
-            try {
-              const res = await fetch( `${API_BASE_URL}/invite`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  email: form.email.trim(),
-                  workspaceName,
-                  inviteLink
-                })
-              });
-              
-              const data = await res.json();
-              if (!res.ok) throw new Error(data.error || 'Failed to send invite');
-              
-              addEditor({ ...form, name: form.name.trim(), role: form.role.trim() || 'Editor' });
-              alert('Invite sent successfully!');
-              onClose();
-            } catch (error) {
-              console.error(error);
-              alert(`Error sending invite: ${error.message}`);
-            } finally {
-              setSending(false);
-            }
-          }}>{sending ? 'Sending...' : 'Send Invite'}</button>
+          <button className="primary-button" disabled={sending || !form.email.trim()} onClick={handleSubmit}>
+            {sending ? 'Sending Invite...' : '✨ Send Invite'}
+          </button>
         </div>
       </div>
     </Modal>
