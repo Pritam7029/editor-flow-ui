@@ -97,3 +97,76 @@ export async function updateMyProfile(payload) {
 
     return response.data.profile;
 }
+
+export async function bootstrapSession() {
+    const response = await apiRequest('/api/session/bootstrap');
+    return response.data;
+}
+
+export async function getPlans() {
+    const response = await apiRequest('/api/plans');
+    return response.data.plans;
+}
+
+export async function getBillingMe() {
+    const response = await apiRequest('/api/billing/me');
+    return response.data;
+}
+
+export async function selectFreePlan() {
+    const response = await apiRequest('/api/billing/select-free', {
+        method: 'POST'
+    });
+    return response.data;
+}
+
+export async function contactSales(payload) {
+    const response = await apiRequest('/api/contact-sales', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    return response.data;
+}
+
+export async function createJoinLink(workspaceId, payload) {
+    const response = await apiRequest(`/api/workspaces/${workspaceId}/join-links`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    return response.data;
+}
+
+export async function getJoinLinkDetails(token) {
+    const response = await apiRequest(`/api/join-links/${token}`);
+    return response.data;
+}
+
+export async function requestWorkspaceAccess(token, payload) {
+    const response = await apiRequest(`/api/join-links/${token}/request`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    return response.data;
+}
+
+export async function getJoinRequests(workspaceId) {
+    const response = await apiRequest(`/api/workspaces/${workspaceId}/join-requests`);
+    return response.data.requests;
+}
+
+export async function approveJoinRequest(workspaceId, requestId) {
+    const response = await apiRequest(`/api/workspaces/${workspaceId}/join-requests/${requestId}/approve`, {
+        method: 'POST'
+    });
+    return response.data;
+}
+
+export async function rejectJoinRequest(workspaceId, requestId) {
+    const response = await apiRequest(`/api/workspaces/${workspaceId}/join-requests/${requestId}/reject`, {
+        method: 'POST'
+    });
+    return response.data;
+}

@@ -16,9 +16,20 @@ export default function AccountDrawer({ isOpen, onClose, onOpenWorkspaceModal })
    saveAccount,
    joinOrCreateWorkspace
  } = useAppContext();
-  const currentWorkspace = useMemo(() => meta.workspaces.find((item) => item.id === meta.currentWorkspaceId), [meta]);
   const [form, setForm] = useState(meta.account);
   const [joinName, setJoinName] = useState('');
+
+  const visibleWorkspaces = useMemo(() => {
+    return backendWorkspaces && backendWorkspaces.length > 0
+      ? backendWorkspaces
+      : meta.workspaces || [];
+  }, [backendWorkspaces, meta.workspaces]);
+
+  const usingBackendWorkspaces = backendWorkspaces && backendWorkspaces.length > 0;
+
+  const currentWorkspace = useMemo(() => {
+    return visibleWorkspaces.find((item) => item.id === meta.currentWorkspaceId);
+  }, [visibleWorkspaces, meta.currentWorkspaceId]);
 
   useEffect(() => {
     if (isOpen) {
@@ -27,14 +38,7 @@ export default function AccountDrawer({ isOpen, onClose, onOpenWorkspaceModal })
     }
   }, [isOpen, meta.account]);
 
-  if (!isOpen) return null;
- const visibleWorkspaces =
-  backendWorkspaces && backendWorkspaces.length > 0
-    ? backendWorkspaces
-    : meta.workspaces || [];
-
-const usingBackendWorkspaces =
-  backendWorkspaces && backendWorkspaces.length > 0; 
+  if (!isOpen) return null; 
 
   return (
     <div className="drawer-overlay" onClick={onClose}>

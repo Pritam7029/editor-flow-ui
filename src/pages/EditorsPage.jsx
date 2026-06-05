@@ -2,13 +2,21 @@ import { useEffect, useState } from 'react';
 import { useAppContext } from '../context/AppContext';
 import { getAvatarInitials } from '../utils/helpers';
 import { canManageEditors } from '../utils/rbac';
-import { getWorkspaceMembers, updateWorkspaceMemberRole, removeWorkspaceMember } from '../services/workspaceApi';
+import { 
+  getWorkspaceMembers, 
+  updateWorkspaceMemberRole, 
+  removeWorkspaceMember,
+  getJoinRequests,
+  approveJoinRequest,
+  rejectJoinRequest
+} from '../services/workspaceApi';
 
 export default function EditorsPage({ onOpenEditorModal }) {
   const { workspace, meta, pushToast, dispatch } = useAppContext();
   const [members, setMembers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [joinRequests, setJoinRequests] = useState([]);
 
   const fetchMembers = async () => {
     if (!meta.currentWorkspaceId) return;
@@ -17,6 +25,17 @@ export default function EditorsPage({ onOpenEditorModal }) {
       setError('');
       const data = await getWorkspaceMembers(meta.currentWorkspaceId);
       setMembers(data || []);
+      
+      const userMemberRecord = (data || []).find(m => m.user_id === meta.account?.id);
+      const userRole = userMemberRecord?.role || 'editor';
+      const isOwnerOrAdmin = userRole === 'owner' || userRole === 'admin';
+      
+      if (isOwnerOrAdmin) {
+        const requests = await getJoinRequests(meta.currentWorkspaceId);
+        setJoinRequests((requests || []).filter(r => r.status === 'pending'));
+      } else {
+        setJoinRequests([]);
+      }
     } catch (err) {
       console.error(err);
       setError(err.message || 'Failed to load team members.');
@@ -50,6 +69,30 @@ export default function EditorsPage({ onOpenEditorModal }) {
     }
   };
 
+  const handleApproveRequest = async (requestId) => {
+    try {
+      setLoading(true);
+      await approveJoinRequest(meta.currentWorkspaceId, requestId);
+      pushToast('Join request approved!');
+      fetchMembers();
+    } catch (err) {
+      alert(err.message || 'Failed to approve request.');
+      setLoading(false);
+    }
+  };
+
+  const handleRejectRequest = async (requestId) => {
+    try {
+      setLoading(true);
+      await rejectJoinRequest(meta.currentWorkspaceId, requestId);
+      pushToast('Join request rejected.', 'error');
+      fetchMembers();
+    } catch (err) {
+      alert(err.message || 'Failed to reject request.');
+      setLoading(false);
+    }
+  };
+
   // Check if current user is owner or admin in this workspace
   const userMemberRecord = members.find(m => m.user_id === meta.account?.id);
   const userRole = userMemberRecord?.role || 'editor';
@@ -78,6 +121,35 @@ export default function EditorsPage({ onOpenEditorModal }) {
       {error && (
         <div className="form-error" style={{ padding: '16px', borderRadius: '12px' }}>
           {error}
+        </div>
+      )}
+
+      {isAdminOrOwner && joinRequests.length > 0 && (
+        <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', padding: '24px', borderRadius: '16px', marginBottom: '32px' }}>
+          <h3 style={{ margin: '0 0 16px', fontSize: '18px', fontWeight: 600 }}>Access Requests</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            {joinRequests.map((req) => {
+              const reqProfile = req.requester || {};
+              const reqName = reqProfile.full_name || reqProfile.email?.split('@')[0] || 'Guest';
+              return (
+                <div key={req.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: '#080c14', borderRadius: '12px', border: '1px solid var(--border)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <div className="avatar-square round" style={{ background: `${reqProfile.color || '#8b5cf6'}20`, color: reqProfile.color || '#8b5cf6', fontSize: '14px', fontWeight: 'bold', width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      {getAvatarInitials(reqName)}
+                    </div>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: '14px' }}>{reqName} ({reqProfile.email})</div>
+                      {req.message && <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>"{req.message}"</div>}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button className="primary-button small" onClick={() => handleApproveRequest(req.id)}>Approve</button>
+                    <button className="danger-button small" onClick={() => handleRejectRequest(req.id)}>Reject</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
