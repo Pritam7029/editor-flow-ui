@@ -20,7 +20,17 @@ import {
 } from '../services/taskApi';
 import {
   getWorkspaceFiles,
-  uploadWorkspaceFiles,
+  initFileUpload,
+  completeFileUpload,
+  deleteFile,
+  getFileVersions,
+  createFileVersion,
+  getFileRevisions,
+  createFileRevision,
+  updateFileRevision,
+  deleteFileRevision,
+  updateFilePermissions,
+  uploadFileWithProgress,
   deleteWorkspaceFile,
   updateWorkspaceFilePermissions,
   addWorkspaceFileComment
@@ -56,7 +66,7 @@ import {
   MIN_SIDEBAR_W,
   MAX_SIDEBAR_W,
 } from '../utils/constants';
-import { clamp, extractMentions, uid } from '../utils/helpers';
+import { clamp, extractMentions, uid, uuidv4 } from '../utils/helpers';
 import { setObjectUrl, revokeObjectUrl } from '../utils/fileStore';
 
 const AppContext = createContext(null);
@@ -674,7 +684,8 @@ export function AppProvider({ children, session }) {
       pushToast('Chat cleared.', 'error');
     };
 
-    const addFiles = async (fileList, uploaderId) => {
+    const addFiles = async (fileList, uploaderId, onProgress) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
       // Images ≤ 2 MB: compress to base64 so they persist across page refreshes.
       // Everything else (videos, audio, large images, any format): use a zero-copy
       // Object URL — the browser streams directly from disk, so there is NO size
@@ -684,7 +695,7 @@ export function AppProvider({ children, session }) {
       const compressImage = (file) => new Promise((resolve) => {
         const reader = new FileReader();
         reader.onload = (e) => {
-          const raw = e.target?.result;
+          const raw = e.target && e.target.result;
           const img = new Image();
           img.onload = () => {
             const MAX_DIM = 1920;
@@ -706,9 +717,71 @@ export function AppProvider({ children, session }) {
         reader.readAsDataURL(file);
       });
 
+      if (isBackend) {
+        try {
+          const workspaceId = state.meta.currentWorkspaceId;
+          for (let i = 0; i < fileList.length; i++) {
+            const file = fileList[i];
+            
+            // Extract duration offline if video/audio
+            let durationSeconds = null;
+            if (file.type && (file.type.startsWith('video/') || file.type.startsWith('audio/'))) {
+              durationSeconds = await new Promise((resolve) => {
+                const element = document.createElement(file.type.startsWith('video/') ? 'video' : 'audio');
+                element.src = URL.createObjectURL(file);
+                element.preload = 'metadata';
+                element.onloadedmetadata = () => {
+                  resolve(element.duration || null);
+                  URL.revokeObjectURL(element.src);
+                };
+                element.onerror = () => {
+                  resolve(null);
+                  URL.revokeObjectURL(element.src);
+                };
+              });
+            }
+
+            // 1. Initialize upload with backend
+            const initData = await initFileUpload(workspaceId, {
+              name: file.name,
+              size_bytes: file.size,
+              mime_type: file.type || 'application/octet-stream'
+            });
+
+            // 2. Direct upload to Supabase Storage via pre-signed URL with progress
+            await uploadFileWithProgress(initData.signedUrl, initData.token, file, (percent) => {
+              if (onProgress) {
+                const overallPercent = Math.round(((i * 100) + percent) / fileList.length);
+                onProgress(overallPercent);
+              }
+            });
+
+            // 3. Complete upload on backend
+            await completeFileUpload(workspaceId, {
+              fileId: initData.file.id,
+              versionId: initData.version.id,
+              durationSeconds
+            });
+          }
+
+          // Refresh files in state
+          const refreshedFiles = await getWorkspaceFiles(workspaceId);
+          updateWorkspace((current) => ({
+            ...current,
+            files: refreshedFiles || []
+          }));
+
+          pushToast(fileList.length + ' file(s) uploaded successfully.');
+        } catch (err) {
+          pushToast(err.message || 'Upload failed', 'error');
+          throw err;
+        }
+        return;
+      }
+
       const filesData = await Promise.all([...fileList].map(async (file) => {
-        const fileId = uid();
-        const useBase64 = file.type.startsWith('image/') && file.size <= IMAGE_PERSIST_LIMIT;
+        const fileId = uuidv4();
+        const useBase64 = file.type && file.type.startsWith('image/') && file.size <= IMAGE_PERSIST_LIMIT;
         let dataUrl = null;
 
         if (useBase64) {
@@ -729,20 +802,6 @@ export function AppProvider({ children, session }) {
         };
       }));
 
-      if (isBackend) {
-        try {
-          const uploaded = await uploadWorkspaceFiles(state.meta.currentWorkspaceId, filesData);
-          updateWorkspace((current) => ({
-            ...current,
-            files: [...current.files, ...uploaded]
-          }));
-          pushToast(`${uploaded.length} file(s) uploaded.`);
-        } catch (err) {
-          pushToast(err.message || 'Failed to upload files', 'error');
-        }
-        return;
-      }
-
       const localFiles = filesData.map(f => ({
         ...f,
         uploadedBy: uploaderId,
@@ -754,11 +813,28 @@ export function AppProvider({ children, session }) {
       pushToast(`${localFiles.length} file(s) uploaded.`);
     };
 
-    const addFileComment = async (fileId, text, senderId, timestamp = null) => {
+    const addFileComment = async (fileId, text, senderId, timestamp = null, fileVersionId = null) => {
       const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
       if (isBackend) {
         try {
-          const comment = await addWorkspaceFileComment(state.meta.currentWorkspaceId, fileId, text, timestamp);
+          const workspaceId = state.meta.currentWorkspaceId;
+          let targetVersionId = fileVersionId;
+          if (!targetVersionId) {
+            const fileObj = state.workspace.files.find(f => f.id === fileId);
+            const latestVersion = fileObj && fileObj.versions && fileObj.versions[fileObj.versions.length - 1];
+            targetVersionId = latestVersion && latestVersion.id;
+          }
+
+          if (!targetVersionId) {
+            throw new Error('No ready version found for comment');
+          }
+
+          const comment = await createFileRevision(workspaceId, fileId, {
+            fileVersionId: targetVersionId,
+            timestampSeconds: timestamp !== null ? Number(timestamp) : 0,
+            body: text
+          });
+
           updateWorkspace((current) => ({
             ...current,
             files: current.files.map((file) => file.id === fileId ? {
@@ -785,7 +861,7 @@ export function AppProvider({ children, session }) {
       addMentionNotifications(text, authorName, {
         icon: '🎥',
         iconClass: 'file-notif',
-        getSubtext: (value) => `On "${file?.name || 'file'}"${timestamp != null ? ` at ${Math.floor(timestamp)}s` : ''}: ${value.slice(0, 60)}${value.length > 60 ? '…' : ''}`,
+        getSubtext: (value) => `On "${file && file.name ? file.name : 'file'}"${timestamp != null ? ` at ${Math.floor(timestamp)}s` : ''}: ${value.slice(0, 60)}${value.length > 60 ? '…' : ''}`,
       });
       pushToast('Feedback added.');
     };
@@ -795,7 +871,7 @@ export function AppProvider({ children, session }) {
       const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
       if (isBackend) {
         try {
-          await deleteWorkspaceFile(state.meta.currentWorkspaceId, fileId);
+          await deleteFile(state.meta.currentWorkspaceId, fileId);
           updateWorkspace((current) => ({ ...current, files: current.files.filter((file) => file.id !== fileId) }));
           pushToast('File deleted.', 'error');
         } catch (err) {
@@ -812,7 +888,7 @@ export function AppProvider({ children, session }) {
       const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
       if (isBackend) {
         try {
-          const updatedVisibleTo = await updateWorkspaceFilePermissions(state.meta.currentWorkspaceId, fileId, visibleTo);
+          const updatedVisibleTo = await updateFilePermissions(state.meta.currentWorkspaceId, fileId, visibleTo);
           updateWorkspace((current) => ({
             ...current,
             files: current.files.map((file) => (file.id === fileId ? { ...file, visibleTo: updatedVisibleTo } : file))
@@ -829,6 +905,108 @@ export function AppProvider({ children, session }) {
         files: current.files.map((file) => (file.id === fileId ? { ...file, visibleTo } : file)),
       }));
       pushToast('File access updated.');
+    };
+
+    const resolveFileRevision = async (fileId, revisionId, isResolved) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          const workspaceId = state.meta.currentWorkspaceId;
+          const updatedComment = await updateFileRevision(workspaceId, fileId, revisionId, {
+            status: isResolved ? 'resolved' : 'open'
+          });
+          
+          updateWorkspace((current) => ({
+            ...current,
+            files: current.files.map((file) => file.id === fileId ? {
+              ...file,
+              comments: file.comments.map((c) => c.id === revisionId ? { ...c, ...updatedComment } : c)
+            } : file)
+          }));
+          
+          pushToast(isResolved ? 'Revision resolved.' : 'Revision re-opened.');
+        } catch (err) {
+          pushToast(err.message || 'Failed to update revision', 'error');
+        }
+      }
+    };
+
+    const deleteFileRevisionById = async (fileId, revisionId) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          const workspaceId = state.meta.currentWorkspaceId;
+          await deleteFileRevision(workspaceId, fileId, revisionId);
+          
+          updateWorkspace((current) => ({
+            ...current,
+            files: current.files.map((file) => file.id === fileId ? {
+              ...file,
+              comments: file.comments.filter((c) => c.id !== revisionId)
+            } : file)
+          }));
+          
+          pushToast('Revision deleted.', 'error');
+        } catch (err) {
+          pushToast(err.message || 'Failed to delete revision', 'error');
+        }
+      }
+    };
+
+    const uploadNewVersion = async (fileId, file, onProgress) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          const workspaceId = state.meta.currentWorkspaceId;
+          
+          // Extract duration offline if video/audio
+          let durationSeconds = null;
+          if (file.type && (file.type.startsWith('video/') || file.type.startsWith('audio/'))) {
+            durationSeconds = await new Promise((resolve) => {
+              const element = document.createElement(file.type.startsWith('video/') ? 'video' : 'audio');
+              element.src = URL.createObjectURL(file);
+              element.preload = 'metadata';
+              element.onloadedmetadata = () => {
+                resolve(element.duration || null);
+                URL.revokeObjectURL(element.src);
+              };
+              element.onerror = () => {
+                resolve(null);
+                URL.revokeObjectURL(element.src);
+              };
+            });
+          }
+
+          // 1. Initialize version upload
+          const initData = await createFileVersion(workspaceId, fileId, {
+            name: file.name,
+            size_bytes: file.size,
+            mime_type: file.type || 'application/octet-stream'
+          });
+
+          // 2. Direct upload to storage
+          await uploadFileWithProgress(initData.signedUrl, initData.token, file, onProgress);
+
+          // 3. Complete version upload
+          await completeFileUpload(workspaceId, {
+            fileId: fileId,
+            versionId: initData.version.id,
+            durationSeconds
+          });
+
+          // Refresh files list
+          const refreshedFiles = await getWorkspaceFiles(workspaceId);
+          updateWorkspace((current) => ({
+            ...current,
+            files: refreshedFiles || []
+          }));
+
+          pushToast('New version V' + initData.version.version_number + ' uploaded.');
+        } catch (err) {
+          pushToast(err.message || 'Failed to upload new version', 'error');
+          throw err;
+        }
+      }
     };
 
     const markNotificationRead = async (notificationId) => {
@@ -1046,6 +1224,9 @@ export function AppProvider({ children, session }) {
       addFileComment,
       deleteFileById,
       updateFilePermissions,
+      resolveFileRevision,
+      deleteFileRevisionById,
+      uploadNewVersion,
       markNotificationRead,
       clearNotifications,
       saveAccount,
@@ -1301,7 +1482,7 @@ useEffect(() => {
         .on('postgres_changes', {
           event: '*',
           schema: 'public',
-          table: 'workspace_files',
+          table: 'files',
           filter: `workspace_id=eq.${activeId}`
         }, () => {
           fetchWorkspaceTasksAndFiles(activeId);
@@ -1309,7 +1490,15 @@ useEffect(() => {
         .on('postgres_changes', {
           event: '*',
           schema: 'public',
-          table: 'file_comments',
+          table: 'file_versions',
+          filter: `workspace_id=eq.${activeId}`
+        }, () => {
+          fetchWorkspaceTasksAndFiles(activeId);
+        })
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'file_revisions',
           filter: `workspace_id=eq.${activeId}`
         }, () => {
           fetchWorkspaceTasksAndFiles(activeId);

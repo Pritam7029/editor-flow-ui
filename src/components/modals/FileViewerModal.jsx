@@ -3,7 +3,6 @@ import { useAppContext } from '../../context/AppContext';
 import { formatDateTime, formatSeconds, getFileIcon, renderMentions } from '../../utils/helpers';
 import { getFileUrl, hasFileUrl, setObjectUrl } from '../../utils/fileStore';
 
-/* ─── tiny helper ─────────────────────────────── */
 function fmtSize(bytes) {
   if (!bytes) return '';
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
@@ -11,21 +10,46 @@ function fmtSize(bytes) {
 }
 
 export default function FileViewerModal({ fileId, isOpen, onClose }) {
-  const { workspace, meta, addFileComment, deleteFileById } = useAppContext();
+  const {
+    workspace,
+    meta,
+    addFileComment,
+    deleteFileById,
+    resolveFileRevision,
+    deleteFileRevisionById,
+    uploadNewVersion,
+    backendWorkspaces
+  } = useAppContext();
+
   const file = useMemo(
-    () => workspace.files.find((item) => item.id === fileId) || null,
-    [workspace.files, fileId],
+    () => (workspace && workspace.files) ? workspace.files.find((item) => item.id === fileId) || null : null,
+    [workspace && workspace.files, fileId],
   );
 
-  const videoRef   = useRef(null);
+  const videoRef = useRef(null);
   const commentRef = useRef(null);
 
-  const [comment, setComment]     = useState('');
+  const [comment, setComment] = useState('');
   const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration]   = useState(0);
-  const [pinTime, setPinTime]     = useState(null);
+  const [duration, setDuration] = useState(0);
+  const [pinTime, setPinTime] = useState(null);
   const [activeComment, setActiveComment] = useState(null);
-  const [, forceUpdate]           = useState(0); // for re-attach
+  const [, forceUpdate] = useState(0); // for re-attach
+  const [activeVersionId, setActiveVersionId] = useState(null);
+  const [versionUploading, setVersionUploading] = useState(false);
+  const [versionProgress, setVersionProgress] = useState(0);
+
+  const isBackend = workspace && backendWorkspaces && backendWorkspaces.some((ws) => ws.id === workspace.id);
+
+  // Initialize/reset active version ID
+  useEffect(() => {
+    if (file && file.versions && file.versions.length > 0) {
+      const latest = file.versions[file.versions.length - 1];
+      setActiveVersionId(latest.id);
+    } else {
+      setActiveVersionId(null);
+    }
+  }, [fileId, file && file.versions]);
 
   /* reset when closed / file changes */
   useEffect(() => {
@@ -35,6 +59,8 @@ export default function FileViewerModal({ fileId, isOpen, onClose }) {
       setDuration(0);
       setPinTime(null);
       setActiveComment(null);
+      setVersionUploading(false);
+      setVersionProgress(0);
     }
   }, [isOpen]);
 
@@ -53,28 +79,49 @@ export default function FileViewerModal({ fileId, isOpen, onClose }) {
     return () => document.removeEventListener('keydown', handler);
   }, [isOpen, onClose]);
 
-  if (!isOpen || !file) return null;
+  // Compute active version
+  const activeVersion = useMemo(() => {
+    if (!file) return null;
+    if (file.versions && file.versions.length > 0) {
+      return file.versions.find(v => v.id === activeVersionId) || file.versions[file.versions.length - 1];
+    }
+    // Dummy version for local offline files
+    return {
+      id: 'local-version',
+      versionNumber: 1,
+      playbackUrl: getFileUrl(file),
+      sizeBytes: file.size,
+      status: 'ready'
+    };
+  }, [file, activeVersionId]);
 
-  const uploader = file.uploadedBy === '__admin__'
-    ? meta.account.name
-    : workspace.editors.find((e) => e.id === file.uploadedBy)?.name || 'Unknown';
+  const uploader = (file && file.uploadedBy === '__admin__')
+    ? (meta.account?.name || 'Admin')
+    : (workspace && workspace.editors && file) ? workspace.editors.find((e) => e.id === file.uploadedBy)?.name || 'Unknown' : 'Unknown';
 
-  const comments = [...file.comments].sort(
-    (a, b) => (a.timestamp ?? Infinity) - (b.timestamp ?? Infinity),
-  );
+  const comments = useMemo(() => {
+    if (!file || !file.comments) return [];
+    let list = [...file.comments];
+    // For backend files, filter comments linked to this version
+    if (isBackend && activeVersion && activeVersion.id !== 'local-version') {
+      list = list.filter(c => c.fileVersionId === activeVersion.id);
+    }
+    return list.sort((a, b) => (a.timestamp ?? Infinity) - (b.timestamp ?? Infinity));
+  }, [file && file.comments, activeVersion, isBackend]);
 
-  const fileUrl    = getFileUrl(file);   // Object URL or base64 dataUrl
-  const urlReady   = hasFileUrl(file);   // false if blob expired after reload
-  const isVideo    = file.type.startsWith('video');
-  const isImage    = file.type.startsWith('image');
-  const isAudio    = file.type.startsWith('audio');
+  const fileUrl = activeVersion ? activeVersion.playbackUrl : null;
+  const urlReady = activeVersion ? activeVersion.status === 'ready' : false;
+  const isVideo = file && file.type && file.type.startsWith('video');
+  const isImage = file && file.type && file.type.startsWith('image');
+  const isAudio = file && file.type && file.type.startsWith('audio');
 
   /* The time that will be attached to the next comment */
   const effectiveTime = (isVideo || isAudio) ? (pinTime ?? currentTime) : null;
 
   const submitComment = () => {
-    if (!comment.trim()) return;
-    addFileComment(file.id, comment.trim(), workspace.senderId, effectiveTime);
+    if (!comment.trim() || !file) return;
+    const versionId = (activeVersion && activeVersion.id !== 'local-version') ? activeVersion.id : null;
+    addFileComment(file.id, comment.trim(), workspace?.senderId, effectiveTime, versionId);
     setComment('');
     setPinTime(null);
   };
@@ -83,7 +130,8 @@ export default function FileViewerModal({ fileId, isOpen, onClose }) {
     if (videoRef.current) videoRef.current.currentTime = t;
   };
 
-  /* ── render ──────────────────────────────────── */
+  if (!isOpen || !file) return null;
+
   return (
     <div className="review-overlay" onClick={onClose}>
       <div className="review-shell" onClick={(e) => e.stopPropagation()}>
@@ -95,12 +143,78 @@ export default function FileViewerModal({ fileId, isOpen, onClose }) {
           <button className="review-close-btn" onClick={onClose} title="Close (Esc)">✕</button>
 
           {/* file name + meta */}
-          <div className="review-file-header">
+          <div className="review-file-header" style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
             <span className="review-file-name">{file.name}</span>
             <span className="review-meta-pill">📤 {uploader}</span>
             <span className="review-meta-pill">📅 {formatDateTime(file.uploadedAt)}</span>
-            {file.size && <span className="review-meta-pill">💾 {fmtSize(file.size)}</span>}
-            <span className="review-meta-pill">💬 {file.comments.length}</span>
+            {activeVersion && activeVersion.sizeBytes && (
+              <span className="review-meta-pill">💾 {fmtSize(activeVersion.sizeBytes)}</span>
+            )}
+            <span className="review-meta-pill">💬 {comments.length}</span>
+            
+            {/* Version dropdown */}
+            {file.versions && file.versions.length > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <span className="review-meta-pill" style={{ background: 'var(--violet-dark)', border: '1px solid var(--violet)' }}>
+                  Version: 
+                  <select
+                    value={activeVersion ? activeVersion.id : ''}
+                    onChange={(e) => setActiveVersionId(e.target.value)}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: 'var(--text-main)',
+                      fontWeight: 'bold',
+                      marginLeft: '4px',
+                      cursor: 'pointer',
+                      outline: 'none'
+                    }}
+                  >
+                    {file.versions.map((v) => (
+                      <option key={v.id} value={v.id} style={{ background: 'var(--bg-main)', color: 'var(--text-main)' }}>
+                        V{v.versionNumber} {v.id === file.versions[file.versions.length - 1].id ? '(Latest)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </span>
+              </div>
+            )}
+
+            {/* Version Upload */}
+            {isBackend && (
+              <div style={{ marginLeft: 'auto' }}>
+                {versionUploading ? (
+                  <span className="review-meta-pill" style={{ color: 'var(--cyan)' }}>
+                    ⏳ Uploading V{(file.versions ? file.versions.length : 0) + 1}: {versionProgress}%
+                  </span>
+                ) : (
+                  <label className="primary-button" style={{ cursor: 'pointer', padding: '6px 12px', fontSize: '0.75rem', margin: 0, borderRadius: '4px' }}>
+                    ＋ Upload New Version
+                    <input
+                      hidden
+                      type="file"
+                      accept="*/*"
+                      onChange={async (e) => {
+                        const f = e.target.files && e.target.files[0];
+                        if (!f) return;
+                        setVersionUploading(true);
+                        setVersionProgress(0);
+                        try {
+                          await uploadNewVersion(file.id, f, (progress) => {
+                            setVersionProgress(progress);
+                          });
+                        } catch (err) {
+                          console.error('Failed to upload version:', err);
+                        } finally {
+                          setVersionUploading(false);
+                          setVersionProgress(0);
+                        }
+                      }}
+                    />
+                  </label>
+                )}
+              </div>
+            )}
           </div>
 
           {/* preview surface */}
@@ -116,11 +230,10 @@ export default function FileViewerModal({ fileId, isOpen, onClose }) {
                     type="file"
                     accept="*/*"
                     onChange={(e) => {
-                      const f = e.target.files?.[0];
+                      const f = e.target.files && e.target.files[0];
                       if (!f) return;
                       const url = URL.createObjectURL(f);
                       setObjectUrl(file.id, url);
-                      // force re-render
                       window.dispatchEvent(new Event('reattach'));
                     }}
                   />
@@ -159,7 +272,6 @@ export default function FileViewerModal({ fileId, isOpen, onClose }) {
             )}
           </div>
 
-
           {/* timeline / progress bar for video & audio */}
           {(isVideo || isAudio) && (
             <div className="review-timeline">
@@ -192,8 +304,11 @@ export default function FileViewerModal({ fileId, isOpen, onClose }) {
                 {comments.filter((c) => c.timestamp != null && duration).map((c) => (
                   <button
                     key={c.id}
-                    className={`review-comment-marker ${activeComment === c.id ? 'review-comment-marker-active' : ''}`}
-                    style={{ left: `${(c.timestamp / duration) * 100}%` }}
+                    className={`review-comment-marker ${activeComment === c.id ? 'review-comment-marker-active' : ''} ${c.status === 'resolved' ? 'review-comment-marker-resolved' : ''}`}
+                    style={{
+                      left: `${(c.timestamp / duration) * 100}%`,
+                      background: c.status === 'resolved' ? 'var(--green)' : 'var(--violet)'
+                    }}
                     onClick={(e) => { e.stopPropagation(); seekTo(c.timestamp); }}
                     onMouseEnter={() => setActiveComment(c.id)}
                     onMouseLeave={() => setActiveComment(null)}
@@ -262,31 +377,112 @@ export default function FileViewerModal({ fileId, isOpen, onClose }) {
             <span className="review-comment-count">{comments.length}</span>
           </div>
 
-          <div className="review-comment-list">
+          <div className="review-comment-list" style={{ overflowY: 'auto', maxHeight: 'calc(100vh - 120px)' }}>
             {!comments.length && (
               <div className="review-empty">No feedback yet. Add the first comment!</div>
             )}
-            {comments.map((item) => (
-              <button
-                key={item.id}
-                className={`review-comment-item ${activeComment === item.id ? 'review-comment-item-active' : ''}`}
-                onClick={() => { if (item.timestamp != null) seekTo(item.timestamp); }}
-                onMouseEnter={() => setActiveComment(item.id)}
-                onMouseLeave={() => setActiveComment(null)}
-              >
-                {item.timestamp != null && (
-                  <span className="review-comment-ts">⏱ {formatSeconds(item.timestamp)}</span>
-                )}
-                <div className="review-comment-meta">
-                  <strong>{item.authorName}</strong>
-                  <small>{formatDateTime(item.ts)}</small>
-                </div>
+            {comments.map((item) => {
+              const isResolved = item.status === 'resolved';
+              const isOwnerOrAuthor = item.authorId === meta.account.id || (workspace && workspace.ownerId === meta.account.id);
+              
+              return (
                 <div
-                  className="review-comment-text"
-                  dangerouslySetInnerHTML={{ __html: renderMentions(item.text, workspace.editors) }}
-                />
-              </button>
-            ))}
+                  key={item.id}
+                  className={`review-comment-item ${activeComment === item.id ? 'review-comment-item-active' : ''}`}
+                  onClick={() => { if (item.timestamp != null) seekTo(item.timestamp); }}
+                  onMouseEnter={() => setActiveComment(item.id)}
+                  onMouseLeave={() => setActiveComment(null)}
+                  style={{
+                    opacity: isResolved ? 0.6 : 1,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    padding: '12px',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border)',
+                    background: isResolved ? 'rgba(16, 185, 129, 0.05)' : 'rgba(255,255,255,0.02)',
+                    marginBottom: '8px',
+                    cursor: 'pointer',
+                    position: 'relative'
+                  }}
+                >
+                  <div style={{ display: 'flex', width: '100%', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                    {item.timestamp != null && (
+                      <span className="review-comment-ts" style={{ background: isResolved ? 'var(--green)' : 'var(--violet)' }}>
+                        ⏱ {formatSeconds(item.timestamp)}
+                      </span>
+                    )}
+                    
+                    {/* Resolve button */}
+                    {isBackend && (
+                      <button
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          cursor: 'pointer',
+                          fontSize: '1rem',
+                          marginLeft: 'auto',
+                          padding: '2px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: isResolved ? 'var(--green)' : 'var(--text-muted)'
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          resolveFileRevision(file.id, item.id, !isResolved);
+                        }}
+                        title={isResolved ? 'Re-open revision' : 'Resolve revision'}
+                      >
+                        {isResolved ? '✅' : '☑'}
+                      </button>
+                    )}
+
+                    {/* Delete button */}
+                    {isOwnerOrAuthor && isBackend && (
+                      <button
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          cursor: 'pointer',
+                          fontSize: '0.85rem',
+                          color: 'var(--red)',
+                          marginLeft: isBackend ? '6px' : 'auto',
+                          padding: '2px'
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteFileRevisionById(file.id, item.id);
+                        }}
+                        title="Delete revision"
+                      >
+                        🗑
+                      </button>
+                    )}
+                  </div>
+                  <div className="review-comment-meta">
+                    <strong>{item.authorName}</strong>
+                    <small>{formatDateTime(item.ts)}</small>
+                  </div>
+                  <div
+                    className="review-comment-text"
+                    style={{
+                      textDecoration: isResolved ? 'line-through' : 'none',
+                      color: isResolved ? 'var(--text-muted)' : 'var(--text-main)',
+                      fontSize: '0.9rem',
+                      lineHeight: '1.4',
+                      wordBreak: 'break-word',
+                      marginTop: '6px'
+                    }}
+                    dangerouslySetInnerHTML={{ __html: renderMentions(item.text, workspace.editors) }}
+                  />
+                  {isResolved && item.resolvedBy && (
+                    <small style={{ color: 'var(--green)', fontSize: '0.75rem', marginTop: '6px', fontStyle: 'italic' }}>
+                      Resolved
+                    </small>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
 
