@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { useAppContext } from '../context/AppContext';
 import { formatDate, getAvatarInitials, isOverdue, renderMentions, formatTime } from '../utils/helpers';
+import { useFullscreenPanel } from '../hooks/useFullscreenPanel';
 
 function TaskCommentPanel({ task }) {
   const { workspace, addTaskComment } = useAppContext();
@@ -111,6 +112,7 @@ export default function TasksPage({ onOpenTaskModal, onOpenTaskDetail, onOpenCol
   const [dragColumnKey, setDragColumnKey] = useState(null);
   const [dropTarget, setDropTarget] = useState(null);
   const boardRef = useRef(null);
+  const [isFullscreen, setIsFullscreen] = useFullscreenPanel();
 
   useEffect(() => {
     setFilterEditorId(workspace.activeEditorId || '');
@@ -174,7 +176,7 @@ export default function TasksPage({ onOpenTaskModal, onOpenTaskDetail, onOpenCol
   };
 
   return (
-    <section className="page-stack">
+    <section className={`page-stack ${isFullscreen ? 'panel-fullscreen' : ''}`}>
       <div className="section-header-row">
         <div>
           <h2>Task Board</h2>
@@ -186,6 +188,14 @@ export default function TasksPage({ onOpenTaskModal, onOpenTaskDetail, onOpenCol
             {workspace.editors.map((editor) => <option key={editor.id} value={editor.id}>{editor.name}</option>)}
           </select>
           <button className="primary-button" onClick={onOpenTaskModal}>＋ Add Task</button>
+          <button 
+            className="ghost-button" 
+            onClick={() => setIsFullscreen(!isFullscreen)}
+            title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: '44px', minHeight: '44px', borderRadius: '12px', padding: 0 }}
+          >
+            {isFullscreen ? '❐' : '⛶'}
+          </button>
         </div>
       </div>
       <div className="board-scroll" ref={boardRef}>

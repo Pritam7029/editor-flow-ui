@@ -3,21 +3,35 @@ import { useAppContext } from '../../context/AppContext';
 import { COLOR_OPTIONS } from '../../utils/constants';
 import { getAvatarInitials } from '../../utils/helpers';
 import { supabase } from '../../config/supabaseclient';
+import { initAvatarUpload, completeAvatarUpload, updateMyProfile } from '../../services/profileApi';
+import { uploadFileWithProgress } from '../../services/fileApi';
+
+function formatBytes(bytes, decimals = 1) {
+  if (!bytes || Number(bytes) === 0) return '0 Bytes';
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
 
 export default function AccountDrawer({ isOpen, onClose, onOpenWorkspaceModal }) {
   const {
-   meta,
-   switchWorkspace,
-   deleteWorkspaceById,
-   backendWorkspaces,
-   backendWorkspaceLoading,
-   backendWorkspaceError,
-   deleteBackendWorkspaceById,
-   saveAccount,
-   joinOrCreateWorkspace
- } = useAppContext();
+    meta,
+    switchWorkspace,
+    deleteWorkspaceById,
+    backendWorkspaces,
+    backendWorkspaceLoading,
+    backendWorkspaceError,
+    deleteBackendWorkspaceById,
+    saveAccount,
+    joinOrCreateWorkspace,
+    refreshProfile
+  } = useAppContext();
   const [form, setForm] = useState(meta.account);
   const [joinName, setJoinName] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState(null);
 
   const visibleWorkspaces = useMemo(() => {
     return backendWorkspaces && backendWorkspaces.length > 0
@@ -35,8 +49,70 @@ export default function AccountDrawer({ isOpen, onClose, onOpenWorkspaceModal })
     if (isOpen) {
       setForm(meta.account);
       setJoinName('');
+      setUploadError(null);
     }
   }, [isOpen, meta.account]);
+
+  const handleAvatarChange = async (event) => {
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+
+    // Show preview local URL
+    const previewUrl = URL.createObjectURL(file);
+    setForm((current) => ({ ...current, avatarUrl: previewUrl }));
+
+    try {
+      setUploading(true);
+      setUploadError(null);
+
+      // 1. Init upload on backend
+      const initData = await initAvatarUpload({
+        name: file.name,
+        mime_type: file.type,
+        size_bytes: file.size
+      });
+
+      // 2. Upload to Supabase Storage via signedUrl
+      await uploadFileWithProgress(initData.signedUrl, initData.token, file, (percent) => {
+        // Can track progress if needed
+      });
+
+      // 3. Complete upload
+      const profile = await completeAvatarUpload({
+        storagePath: initData.storagePath
+      });
+
+      // 4. Refresh app state
+      await refreshProfile();
+
+      setForm((current) => ({
+        ...current,
+        avatarUrl: profile.avatar_url
+      }));
+    } catch (err) {
+      console.error('Avatar upload failed:', err);
+      setUploadError(err.message || 'Failed to upload avatar image');
+      // Reset preview on error
+      setForm((current) => ({ ...current, avatarUrl: meta.account.avatarUrl }));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleRemovePhoto = async () => {
+    try {
+      setUploading(true);
+      setUploadError(null);
+      await updateMyProfile({ avatarUrl: null, avatar_storage_path: null });
+      await refreshProfile();
+      setForm((current) => ({ ...current, avatarUrl: null }));
+    } catch (err) {
+      console.error('Failed to remove avatar:', err);
+      setUploadError(err.message || 'Failed to remove avatar image');
+    } finally {
+      setUploading(false);
+    }
+  };
 
   if (!isOpen) return null; 
 
@@ -50,7 +126,7 @@ export default function AccountDrawer({ isOpen, onClose, onOpenWorkspaceModal })
             </div>
             <div>
               <h3>Your Account</h3>
-              <p>{currentWorkspace?.name}</p>
+              <p>{currentWorkspace && currentWorkspace.name}</p>
             </div>
           </div>
           <button className="icon-button" onClick={onClose}>✕</button>
@@ -59,17 +135,24 @@ export default function AccountDrawer({ isOpen, onClose, onOpenWorkspaceModal })
         <div className="drawer-body">
           <section className="form-stack">
             <h4>Profile</h4>
-            <label className="upload-avatar-box">
-              <span>Upload photo</span>
-              <input hidden type="file" accept="image/*" onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (!file) return;
-                const reader = new FileReader();
-                reader.onload = (loadEvent) => setForm((current) => ({ ...current, avatarUrl: loadEvent.target?.result }));
-                reader.readAsDataURL(file);
-              }} />
+            {uploadError && (
+              <div className="form-error" style={{ color: 'var(--rose)', fontSize: '0.85rem' }}>
+                {uploadError}
+              </div>
+            )}
+            <label className={`upload-avatar-box ${uploading ? 'uploading-btn' : ''}`} style={{ cursor: uploading ? 'not-allowed' : 'pointer' }}>
+              <span>{uploading ? '⏳ Uploading...' : 'Upload photo'}</span>
+              <input hidden type="file" accept="image/*" onChange={handleAvatarChange} disabled={uploading} />
             </label>
-            {form.avatarUrl && <button className="ghost-button small" onClick={() => setForm((current) => ({ ...current, avatarUrl: null }))}>Remove Photo</button>}
+            {form.avatarUrl && (
+              <button 
+                className="ghost-button small" 
+                onClick={handleRemovePhoto}
+                disabled={uploading}
+              >
+                Remove Photo
+              </button>
+            )}
             <input className="text-input" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Display name" />
             <input className="text-input" value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })} placeholder="Role / Title" />
             <textarea className="text-input" rows={3} value={form.bio} onChange={(event) => setForm({ ...form, bio: event.target.value })} placeholder="Bio" />
@@ -86,6 +169,58 @@ export default function AccountDrawer({ isOpen, onClose, onOpenWorkspaceModal })
             <div style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
               <button className="primary-button" style={{ flex: 1 }} onClick={() => saveAccount(form)}>💾 Save Profile</button>
               <button className="danger-button" style={{ flex: 1 }} onClick={async () => { await supabase.auth.signOut(); }}>🚪 Logout</button>
+            </div>
+          </section>
+
+          {/* Plan Section */}
+          <section className="form-stack" style={{ borderTop: '1px solid var(--border)', paddingTop: '16px', marginTop: '16px' }}>
+            <h4 style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '0 0 8px' }}>
+              <span>Subscription Plan</span>
+              <span className="badge badge-success" style={{ textTransform: 'capitalize', fontSize: '0.75rem', fontWeight: 'bold' }}>
+                {meta.account && meta.account.plan && meta.account.plan.name ? meta.account.plan.name : 'Free'}
+              </span>
+            </h4>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem' }}>
+              <span style={{ color: 'var(--text-secondary)' }}>Storage Limit:</span>
+              <strong style={{ color: 'var(--text-primary)' }}>
+                {meta.account && meta.account.plan && meta.account.plan.max_storage_bytes ? formatBytes(meta.account.plan.max_storage_bytes) : '2 GB'}
+              </strong>
+            </div>
+            {meta.account && meta.account.plan && meta.account.plan.key === 'free' && (
+              <button 
+                className="primary-button small full-width"
+                style={{ marginTop: '8px' }}
+                onClick={() => {
+                  window.alert('Upgrading to Pro... Please contact our sales team to proceed with custom billing plans.');
+                }}
+              >
+                Upgrade to Pro (100 GB)
+              </button>
+            )}
+          </section>
+
+          {/* Storage Usage Section */}
+          <section className="form-stack" style={{ borderTop: '1px solid var(--border)', paddingTop: '16px', marginTop: '16px' }}>
+            <h4 style={{ margin: '0 0 8px' }}>Storage Usage</h4>
+            <div className="progress-track" style={{ height: '10px', background: 'rgba(255, 255, 255, 0.08)', borderRadius: '999px', overflow: 'hidden', position: 'relative' }}>
+              <span 
+                style={{ 
+                  display: 'block',
+                  height: '100%',
+                  background: 'linear-gradient(90deg, var(--violet), var(--cyan))',
+                  width: `${meta.account && meta.account.storagePercent ? Math.min(100, meta.account.storagePercent) : 0}%`,
+                  transition: 'width 0.3s ease'
+                }} 
+              />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+              <span>
+                {meta.account && meta.account.storageUsedBytes !== undefined ? formatBytes(meta.account.storageUsedBytes) : '0 Bytes'} used of{' '}
+                {meta.account && meta.account.storageLimitBytes !== undefined ? formatBytes(meta.account.storageLimitBytes) : '2 GB'}
+              </span>
+              <span>
+                {meta.account && meta.account.storagePercent !== undefined ? Number(meta.account.storagePercent).toFixed(1) : '0.0'}%
+              </span>
             </div>
           </section>
 

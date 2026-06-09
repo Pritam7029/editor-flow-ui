@@ -1040,12 +1040,42 @@ export function AppProvider({ children, session }) {
       updateWorkspace((current) => ({ ...current, notifications: [] }));
     };
 
+    const refreshProfile = async () => {
+      if (!session) return;
+      try {
+        const data = await getMyProfile();
+        if (data && data.profile) {
+          const profile = data.profile;
+          updateMeta((current) => ({
+            ...current,
+            account: {
+              ...current.account,
+              id: profile.id,
+              name: profile.full_name || (session && session.user && session.user.email ? session.user.email.split('@')[0] : 'Admin'),
+              email: profile.email,
+              color: profile.color || '#8b5cf6',
+              role: profile.role || 'Workspace Admin',
+              bio: profile.bio || '',
+              avatarUrl: profile.avatar_url || null,
+              status: profile.status || 'active',
+              plan: data.plan || null,
+              storageUsedBytes: data.storageUsedBytes || 0,
+              storageLimitBytes: data.storageLimitBytes || 2147483648,
+              storagePercent: data.storagePercent || 0
+            }
+          }));
+        }
+      } catch (err) {
+        console.error('Failed to refresh profile:', err);
+      }
+    };
+
     const saveAccount = async (payload) => {
       const isBackend = !!session;
 
       if (isBackend) {
         try {
-          const profile = await updateMyProfile({
+          await updateMyProfile({
             name: payload.name,
             color: payload.color,
             role: payload.role,
@@ -1054,18 +1084,7 @@ export function AppProvider({ children, session }) {
             avatarUrl: payload.avatarUrl
           });
 
-          updateMeta((current) => ({
-            ...current,
-            account: {
-              ...current.account,
-              name: profile.full_name || payload.name,
-              color: profile.color || payload.color,
-              role: profile.role || payload.role,
-              bio: profile.bio || payload.bio,
-              status: profile.status || payload.status,
-              avatarUrl: profile.avatar_url || payload.avatarUrl
-            }
-          }));
+          await refreshProfile();
           pushToast('Profile updated.');
         } catch (err) {
           pushToast(err.message || 'Failed to update profile', 'error');
@@ -1230,6 +1249,7 @@ export function AppProvider({ children, session }) {
       markNotificationRead,
       clearNotifications,
       saveAccount,
+      refreshProfile,
       createWorkspace,
       switchWorkspace,
       joinWorkspaceById,
@@ -1375,7 +1395,11 @@ useEffect(() => {
             role: profile.role || 'Workspace Admin',
             bio: profile.bio || '',
             avatarUrl: profile.avatar_url || null,
-            status: profile.status || 'active'
+            status: profile.status || 'active',
+            plan: data.plan || null,
+            storageUsedBytes: data.storageUsedBytes || 0,
+            storageLimitBytes: data.storageLimitBytes || 2147483648,
+            storagePercent: data.storagePercent || 0
           }
         }
       });

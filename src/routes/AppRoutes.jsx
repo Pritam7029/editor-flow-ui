@@ -73,6 +73,8 @@ export default function AppRoutes() {
     };
   }, [session, authLoading, location.pathname]);
 
+  const redirectPath = (bootstrapData && bootstrapData.nextRoute) || '/dashboard';
+
   if (authLoading || (session && bootstrapLoading && !bootstrapData)) {
     return (
       <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', color: 'var(--text-main)', background: 'var(--bg-main)' }}>
@@ -86,7 +88,7 @@ export default function AppRoutes() {
 
   return (
     <Routes>
-      <Route element={<LandingLayout />}>
+      <Route element={session ? <Navigate to={redirectPath} replace /> : <LandingLayout />}>
         <Route path="/" element={<Home />} />
         <Route path="/features" element={<Features />} />
         <Route path="/pricing" element={<Pricing />} />
@@ -98,14 +100,14 @@ export default function AppRoutes() {
       <Route 
         path="/login" 
         element={
-          session ? <Navigate to={(bootstrapData && bootstrapData.nextRoute) || '/dashboard'} replace /> : <LoginPage />
+          session ? <Navigate to={redirectPath} replace /> : <LoginPage />
         } 
       />
 
       <Route 
         path="/onboarding/plan" 
         element={
-          !session ? <Navigate to="/login" replace /> : (
+          !session ? <Navigate to="/" replace /> : (
             <PlanSelectionPage 
               session={session} 
               bootstrapData={bootstrapData} 
@@ -137,7 +139,7 @@ export default function AppRoutes() {
       <Route 
         path="/dashboard" 
         element={
-          !session ? <Navigate to="/login" replace /> : (
+          !session ? <Navigate to="/" replace /> : (
             bootstrapData && bootstrapData.nextRoute === '/onboarding/plan' ? <Navigate to="/onboarding/plan" replace /> : (
               <AppProvider session={session}>
                 <AppShell />

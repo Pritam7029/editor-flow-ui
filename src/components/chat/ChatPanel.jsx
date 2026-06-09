@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAppContext } from '../../context/AppContext';
 import { CHANNELS } from '../../utils/constants';
 import { isAdmin } from '../../utils/rbac';
+import { useFullscreenPanel } from '../../hooks/useFullscreenPanel';
 import {
   extractMentions,
   formatTime,
@@ -54,6 +55,7 @@ export default function ChatPanel({ onOpenTeamModal, mobileOpen, onCloseMobile }
   const [showMenu, setShowMenu] = useState(false);
   const menuRef = useRef(null);
   const scrollRef = useRef(null);
+  const [isFullscreen, setIsFullscreen] = useFullscreenPanel();
 
   const activeMessages = useMemo(() => {
     if (workspace.activeChannel !== 'tagged') {
@@ -110,7 +112,7 @@ export default function ChatPanel({ onOpenTeamModal, mobileOpen, onCloseMobile }
   };
 
   return (
-    <aside className={`chat-panel ${mobileOpen ? 'mobile-open' : ''}`}>
+    <aside className={`chat-panel ${mobileOpen ? 'mobile-open' : ''} ${isFullscreen ? 'panel-fullscreen' : ''}`}>
       <div className="panel-resizer left-resizer" data-panel="chat" />
       <div className="chat-header-row">
         <div>
@@ -121,6 +123,14 @@ export default function ChatPanel({ onOpenTeamModal, mobileOpen, onCloseMobile }
           <button className="icon-button only-mobile" onClick={onCloseMobile}>✕</button>
           <button className="ghost-button small" onClick={() => window.alert(`📞 Starting voice call with ${activeHeader.title}…`)}>📞</button>
           <button className="ghost-button small" onClick={() => window.alert(`🎥 Starting video call with ${activeHeader.title}…`)}>🎥</button>
+          <button 
+            className="ghost-button small" 
+            onClick={() => setIsFullscreen(!isFullscreen)}
+            title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          >
+            {isFullscreen ? '❐' : '⛶'}
+          </button>
           <button className="ghost-button small" onClick={() => setShowMenu((value) => !value)}>⋯</button>
           {showMenu && (
             <div className="floating-panel chat-menu-panel">
