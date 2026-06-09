@@ -324,8 +324,8 @@ export default function AppShell() {
           onCloseMobile={closeMobilePanels}
         />
         <Sidebar mobileOpen={mobileSidebarOpen} onCloseMobile={closeMobilePanels} />
+        {(mobileSidebarOpen || mobileChatOpen) && <div className="mobile-overlay" onClick={closeMobilePanels} />}
       </div>
-      {(mobileSidebarOpen || mobileChatOpen) && <div className="mobile-overlay" onClick={closeMobilePanels} />}
 
       <EditorModal isOpen={editorModalOpen} onClose={() => setEditorModalOpen(false)} />
       <TaskModal isOpen={taskModalOpen} onClose={() => setTaskModalOpen(false)} />
