@@ -13,8 +13,10 @@ import ColumnModal from '../modals/ColumnModal';
 import FileViewerModal from '../modals/FileViewerModal';
 import WorkspaceModal from '../modals/WorkspaceModal';
 import AccountDrawer from '../modals/AccountDrawer';
+import useRealtimeSync from '../../hooks/useRealtimeSync';
 
 export default function AppShell() {
+  useRealtimeSync();
   const {
     workspace,
     setPanelWidth,

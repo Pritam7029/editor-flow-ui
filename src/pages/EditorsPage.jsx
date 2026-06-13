@@ -8,7 +8,9 @@ import {
   removeWorkspaceMember,
   getJoinRequests,
   approveJoinRequest,
-  rejectJoinRequest
+  rejectJoinRequest,
+  getJoinLinks,
+  deleteJoinLink
 } from '../services/workspaceApi';
 
 export default function EditorsPage({ onOpenEditorModal }) {
@@ -17,6 +19,7 @@ export default function EditorsPage({ onOpenEditorModal }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [joinRequests, setJoinRequests] = useState([]);
+  const [joinLinks, setJoinLinks] = useState([]);
 
   const fetchMembers = async () => {
     if (!meta.currentWorkspaceId) return;
@@ -33,8 +36,12 @@ export default function EditorsPage({ onOpenEditorModal }) {
       if (isOwnerOrAdmin) {
         const requests = await getJoinRequests(meta.currentWorkspaceId);
         setJoinRequests((requests || []).filter(r => r.status === 'pending'));
+        
+        const links = await getJoinLinks(meta.currentWorkspaceId);
+        setJoinLinks((links || []).filter(l => l.status === 'active'));
       } else {
         setJoinRequests([]);
+        setJoinLinks([]);
       }
     } catch (err) {
       console.error(err);
@@ -93,6 +100,19 @@ export default function EditorsPage({ onOpenEditorModal }) {
     }
   };
 
+  const handleRevokeLink = async (linkId) => {
+    if (!window.confirm('Are you sure you want to revoke this join link? Anyone with this link will no longer be able to request access.')) return;
+    try {
+      setLoading(true);
+      await deleteJoinLink(meta.currentWorkspaceId, linkId);
+      pushToast('Join link revoked.', 'error');
+      fetchMembers();
+    } catch (err) {
+      alert(err.message || 'Failed to revoke join link.');
+      setLoading(false);
+    }
+  };
+
   // Check if current user is owner or admin in this workspace
   const userMemberRecord = members.find(m => m.user_id === meta.account?.id);
   const userRole = userMemberRecord?.role || 'editor';
@@ -145,6 +165,40 @@ export default function EditorsPage({ onOpenEditorModal }) {
                   <div style={{ display: 'flex', gap: '8px' }}>
                     <button className="primary-button small" onClick={() => handleApproveRequest(req.id)}>Approve</button>
                     <button className="danger-button small" onClick={() => handleRejectRequest(req.id)}>Reject</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {isAdminOrOwner && joinLinks.length > 0 && (
+        <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', padding: '24px', borderRadius: '16px', marginBottom: '32px' }}>
+          <h3 style={{ margin: '0 0 16px', fontSize: '18px', fontWeight: 600 }}>Active Join Links</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            {joinLinks.map((link) => {
+              const expiryText = link.expires_at 
+                ? new Date(link.expires_at).toLocaleDateString()
+                : 'Never';
+              const limitText = link.max_uses 
+                ? `${link.use_count} / ${link.max_uses} uses`
+                : `${link.use_count} uses (Unlimited)`;
+              
+              return (
+                <div key={link.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: '#080c14', borderRadius: '12px', border: '1px solid var(--border)' }}>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: '14px' }}>
+                      Role: <span style={{ textTransform: 'capitalize', color: 'var(--primary)' }}>{link.default_requested_role}</span>
+                    </div>
+                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px', display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+                      <span>⏳ Expires: {expiryText}</span>
+                      <span>👥 Uses: {limitText}</span>
+                      <span>📅 Created: {new Date(link.created_at).toLocaleDateString()}</span>
+                    </div>
+                  </div>
+                  <div>
+                    <button className="danger-button small" onClick={() => handleRevokeLink(link.id)}>Revoke</button>
                   </div>
                 </div>
               );

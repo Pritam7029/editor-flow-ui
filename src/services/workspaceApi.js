@@ -120,6 +120,24 @@ export async function selectFreePlan() {
     return response.data;
 }
 
+export async function createCheckoutSession(priceId) {
+    const response = await apiRequest('/api/billing/create-checkout-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ priceId })
+    });
+    return response.data;
+}
+
+export async function confirmMockCheckout(sessionId) {
+    const response = await apiRequest('/api/billing/confirm-mock-checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId })
+    });
+    return response.data;
+}
+
 export async function contactSales(payload) {
     const response = await apiRequest('/api/contact-sales', {
         method: 'POST',
@@ -167,6 +185,18 @@ export async function approveJoinRequest(workspaceId, requestId) {
 export async function rejectJoinRequest(workspaceId, requestId) {
     const response = await apiRequest(`/api/workspaces/${workspaceId}/join-requests/${requestId}/reject`, {
         method: 'POST'
+    });
+    return response.data;
+}
+
+export async function getJoinLinks(workspaceId) {
+    const response = await apiRequest(`/api/workspaces/${workspaceId}/join-links`);
+    return response.data.joinLinks;
+}
+
+export async function deleteJoinLink(workspaceId, linkId) {
+    const response = await apiRequest(`/api/workspaces/${workspaceId}/join-links/${linkId}`, {
+        method: 'DELETE'
     });
     return response.data;
 }

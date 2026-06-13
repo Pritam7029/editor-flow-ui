@@ -1040,6 +1040,12 @@
   border-top: 1px solid var(--line);
 }
 
+.landing-page .footer-grid {
+  display: grid;
+  grid-template-columns: 2fr repeat(3, 1fr);
+  gap: 48px;
+}
+
 .landing-page .brand-mark--footer .brand-mark__symbol {
   background: linear-gradient(135deg, var(--brand), var(--accent));
 }
@@ -1178,7 +1184,8 @@
   .landing-page .pricing-grid,
   .landing-page .testimonial-grid,
   .landing-page .values-grid,
-  .landing-page .security-row {
+  .landing-page .security-row,
+  .landing-page .footer-grid {
     grid-template-columns: 1fr 1fr;
   }
   .landing-page .pricing-card--popular {

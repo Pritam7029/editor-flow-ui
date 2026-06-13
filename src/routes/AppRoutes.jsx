@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../config/supabaseclient';
 import { AppProvider } from '../context/AppContext';
+import { EncryptionProvider } from '../context/EncryptionContext';
+import { SocketProvider } from '../context/SocketContext';
+import { ChatProvider } from '../context/ChatContext';
 import AppShell from '../components/layout/AppShell';
 import LoginPage from '../pages/LoginPage';
 import LandingLayout from '../components/landing/LandingLayout.jsx';
@@ -13,6 +16,7 @@ import Contact from '../pages/landing/Contact.jsx';
 import PrivacyPolicy from '../pages/landing/PrivacyPolicy.jsx';
 import PlanSelectionPage from '../pages/PlanSelectionPage';
 import JoinWorkspacePage from '../pages/JoinWorkspacePage';
+import AcceptInvitePage from '../pages/AcceptInvitePage';
 import { bootstrapSession } from '../services/workspaceApi';
 
 export default function AppRoutes() {
@@ -22,6 +26,11 @@ export default function AppRoutes() {
   const [bootstrapLoading, setBootstrapLoading] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+
+  // Scroll to top on route change
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [location.pathname]);
 
   useEffect(() => {
     // 1. Get initial session
@@ -137,12 +146,25 @@ export default function AppRoutes() {
       />
 
       <Route 
+        path="/accept-invite" 
+        element={
+          <AcceptInvitePage session={session} />
+        } 
+      />
+
+      <Route 
         path="/dashboard" 
         element={
           !session ? <Navigate to="/" replace /> : (
             bootstrapData && bootstrapData.nextRoute === '/onboarding/plan' ? <Navigate to="/onboarding/plan" replace /> : (
               <AppProvider session={session}>
-                <AppShell />
+                <EncryptionProvider>
+                  <SocketProvider>
+                    <ChatProvider>
+                      <AppShell />
+                    </ChatProvider>
+                  </SocketProvider>
+                </EncryptionProvider>
               </AppProvider>
             )
           )
@@ -153,3 +175,4 @@ export default function AppRoutes() {
     </Routes>
   );
 }
+

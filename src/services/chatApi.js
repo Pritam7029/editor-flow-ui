@@ -28,3 +28,54 @@ export async function clearWorkspaceChat(workspaceId, { convType, targetId }) {
     });
     return response.data;
 }
+
+// Thread-based and E2EE message endpoints
+export async function getChatThreads(workspaceId) {
+    const response = await apiRequest(`/api/workspaces/${workspaceId}/chat/threads`);
+    return response.data.threads;
+}
+
+export async function createChatThread(workspaceId, { type, encryptedName, nameIv, memberIds }) {
+    const response = await apiRequest(`/api/workspaces/${workspaceId}/chat/threads`, {
+        method: 'POST',
+        body: JSON.stringify({ type, encryptedName, nameIv, memberIds })
+    });
+    return response.data.thread;
+}
+
+export async function getThreadMessages(workspaceId, threadId) {
+    const response = await apiRequest(`/api/workspaces/${workspaceId}/chat/threads/${threadId}/messages`);
+    return response.data.messages;
+}
+
+export async function sendThreadMessage(workspaceId, threadId, {
+    encryptedBody,
+    bodyIv,
+    encryptionAlgorithm,
+    workspaceKeyId,
+    senderDeviceKeyId,
+    clientMessageId,
+    messageType
+}) {
+    const response = await apiRequest(`/api/workspaces/${workspaceId}/chat/threads/${threadId}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({
+            encryptedBody,
+            bodyIv,
+            encryptionAlgorithm,
+            workspaceKeyId,
+            senderDeviceKeyId,
+            clientMessageId,
+            messageType
+        })
+    });
+    return response.data.message;
+}
+
+export async function deleteChatMessage(workspaceId, messageId) {
+    const response = await apiRequest(`/api/workspaces/${workspaceId}/chat/messages/${messageId}`, {
+        method: 'DELETE'
+    });
+    return response.data;
+}
+

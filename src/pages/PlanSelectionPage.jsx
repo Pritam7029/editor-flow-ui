@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { selectFreePlan, createWorkspace, contactSales } from '../services/workspaceApi';
+import { useEffect, useState } from 'react';
+import { selectFreePlan, createWorkspace, contactSales, createCheckoutSession, confirmMockCheckout } from '../services/workspaceApi';
 
 export default function PlanSelectionPage({ session, onPlanSelected }) {
   const [loading, setLoading] = useState(false);
@@ -12,6 +12,44 @@ export default function PlanSelectionPage({ session, onPlanSelected }) {
   const [phone, setPhone] = useState('');
   const [message, setMessage] = useState('');
   const [salesSuccess, setSalesSuccess] = useState(false);
+
+  useEffect(() => {
+    const query = new URLSearchParams(window.location.search);
+    if (query.get('success')) {
+      const sessionId = query.get('session_id');
+      const handlePaymentSuccess = async () => {
+        try {
+          setLoading(true);
+          setError(null);
+          
+          if (sessionId && sessionId.startsWith('mock_session_')) {
+            // Confirm mock checkout
+            await confirmMockCheckout(sessionId);
+          } else {
+            // Stripe checkout completed, wait a moment for webhook processing
+            await new Promise(r => setTimeout(r, 1500));
+          }
+          
+          // Automatically create first workspace
+          await createWorkspace('My Workspace');
+          
+          // Clear query params
+          window.history.replaceState({}, document.title, window.location.pathname);
+          
+          onPlanSelected();
+        } catch (err) {
+          console.error('Failed to confirm payment:', err);
+          setError('Payment succeeded, but we failed to initialize your workspace. Please refresh.');
+        } finally {
+          setLoading(false);
+        }
+      };
+      handlePaymentSuccess();
+    } else if (query.get('canceled')) {
+      setError('Payment checkout was canceled. Please try again.');
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  }, [onPlanSelected]);
 
   const handleSelectFree = async () => {
     try {
@@ -30,6 +68,25 @@ export default function PlanSelectionPage({ session, onPlanSelected }) {
       console.error('Failed to select Free plan:', err);
       setError(err.message || 'Failed to select Free plan. Please try again.');
     } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSelectGrowth = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      
+      const result = await createCheckoutSession('price_growth_monthly');
+      const checkoutUrl = result?.url || result?.data?.url;
+      if (checkoutUrl) {
+        window.location.href = checkoutUrl;
+      } else {
+        throw new Error('Failed to retrieve checkout redirect URL');
+      }
+    } catch (err) {
+      console.error('Failed to select Growth plan:', err);
+      setError(err.message || 'Failed to initialize payment checkout.');
       setLoading(false);
     }
   };
@@ -115,13 +172,13 @@ export default function PlanSelectionPage({ session, onPlanSelected }) {
             </ul>
           </div>
           <div>
-            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center', marginBottom: '8px' }}>Payment Integration Coming Soon</div>
             <button 
-              disabled
-              className="ghost-button" 
-              style={{ width: '100%', padding: '0.75rem', fontWeight: 'bold', cursor: 'not-allowed', opacity: 0.6 }}
+              onClick={handleSelectGrowth}
+              disabled={loading}
+              className="primary-button" 
+              style={{ width: '100%', padding: '0.75rem', fontWeight: 'bold' }}
             >
-              Select Growth
+              {loading ? 'Initializing...' : 'Select Growth'}
             </button>
           </div>
         </div>
