@@ -67,6 +67,7 @@ export default function ChatPanel({ onOpenTeamModal, mobileOpen, onCloseMobile }
 
   const { 
     isWorkspaceLocked, 
+    isEncryptionSetup,
     initializeWorkspaceEncryption, 
     loading: encryptionLoading 
   } = useEncryption();
@@ -244,13 +245,17 @@ export default function ChatPanel({ onOpenTeamModal, mobileOpen, onCloseMobile }
                 <p style={{ maxWidth: '300px', fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>
                   This device does not have access to the workspace encryption key yet.
                 </p>
-                {isOwner ? (
+                {isEncryptionSetup ? (
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', background: 'var(--bg-card)', padding: '10px 14px', borderRadius: '8px', border: '1px solid var(--border)' }}>
+                    Waiting for approval. Ask an approved device to grant access to this device.
+                  </div>
+                ) : isOwner ? (
                   <button className="primary-button" onClick={initializeWorkspaceEncryption} style={{ padding: '8px 16px', fontSize: '13px', borderRadius: '8px' }}>
                     Set Up Workspace Encryption
                   </button>
                 ) : (
                   <div style={{ fontSize: '12px', color: 'var(--text-muted)', background: 'var(--bg-card)', padding: '10px 14px', borderRadius: '8px', border: '1px solid var(--border)' }}>
-                    Waiting for approval. Ask the workspace owner or an approved device to grant access.
+                    Waiting for the owner to set up workspace encryption.
                   </div>
                 )}
               </div>

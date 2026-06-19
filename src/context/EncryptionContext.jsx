@@ -28,6 +28,7 @@ export function EncryptionProvider({ children }) {
   const [workspaceKeyId, setWorkspaceKeyId] = useState(null);
   const [workspaceKeyVersion, setWorkspaceKeyVersion] = useState(null);
   const [isWorkspaceLocked, setIsWorkspaceLocked] = useState(false);
+  const [isEncryptionSetup, setIsEncryptionSetup] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const currentWorkspaceId = meta && meta.currentWorkspaceId;
@@ -89,12 +90,19 @@ export function EncryptionProvider({ children }) {
       setWorkspaceKeyId(null);
       setWorkspaceKeyVersion(null);
       setIsWorkspaceLocked(false);
+      setIsEncryptionSetup(false);
       return;
     }
 
     async function loadWorkspaceKey() {
       try {
         setIsWorkspaceLocked(false);
+        
+        // Check if encryption is set up at all by checking any active grants
+        const grantsResult = await getWorkspaceKeyGrants(currentWorkspaceId);
+        const hasGrants = !!(grantsResult && grantsResult.grants && grantsResult.grants.length > 0);
+        setIsEncryptionSetup(hasGrants);
+
         const grantResult = await getMyWorkspaceKeyGrant(currentWorkspaceId, deviceKeyId);
         const grant = grantResult && grantResult.grant;
 
@@ -153,6 +161,7 @@ export function EncryptionProvider({ children }) {
         setWorkspaceKeyId(grant.workspace_key_id);
         setWorkspaceKeyVersion(1);
         setIsWorkspaceLocked(false);
+        setIsEncryptionSetup(true);
         return aesKey;
       }
     } catch (err) {
@@ -198,6 +207,7 @@ export function EncryptionProvider({ children }) {
         workspaceKeyId,
         workspaceKeyVersion,
         isWorkspaceLocked,
+        isEncryptionSetup,
         loading,
         initializeWorkspaceEncryption,
         grantWorkspaceKeyAccess
