@@ -255,7 +255,11 @@ export function AppProvider({ children, session }) {
       if (isBackend) {
         try {
           const task = await createWorkspaceTask(state.meta.currentWorkspaceId, payload);
-          updateWorkspace((current) => ({ ...current, tasks: [...current.tasks, task] }));
+          updateWorkspace((current) => {
+            const tasks = current.tasks || [];
+            if (tasks.some(t => t.id === task.id)) return current;
+            return { ...current, tasks: [...tasks, task] };
+          });
           pushToast(`Task "${task.title}" added.`);
         } catch (err) {
           pushToast(err.message || 'Failed to add task', 'error');
@@ -338,10 +342,15 @@ export function AppProvider({ children, session }) {
           const comment = await addWorkspaceTaskComment(state.meta.currentWorkspaceId, taskId, text);
           updateWorkspace((current) => ({
             ...current,
-            tasks: current.tasks.map((task) => task.id === taskId ? {
-              ...task,
-              comments: [...task.comments, comment],
-            } : task),
+            tasks: (current.tasks || []).map((task) => {
+              if (task.id !== taskId) return task;
+              const comments = task.comments || [];
+              if (comments.some((c) => c.id === comment.id)) return task;
+              return {
+                ...task,
+                comments: [...comments, comment]
+              };
+            }),
           }));
           pushToast('Comment added.');
         } catch (err) {
@@ -373,7 +382,11 @@ export function AppProvider({ children, session }) {
         try {
           const key = `col_${uid()}`;
           const column = await createWorkspaceColumn(state.meta.currentWorkspaceId, { key, ...payload });
-          updateWorkspace((current) => ({ ...current, columns: [...current.columns, column] }));
+          updateWorkspace((current) => {
+            const columns = current.columns || [];
+            if (columns.some((c) => c.id === column.id)) return current;
+            return { ...current, columns: [...columns, column] };
+          });
           pushToast('Column added.');
           return column.key;
         } catch (err) {
