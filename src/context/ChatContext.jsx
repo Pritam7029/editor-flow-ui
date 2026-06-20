@@ -261,8 +261,8 @@ export function ChatProvider({ children }) {
     try {
       const encrypted = await encryptText(text, workspaceKey);
       const payload = {
-        encryptedBody: encrypted.ciphertext,
-        bodyIv: encrypted.iv,
+        encryptedBody: encrypted.encryptedBody,
+        bodyIv: encrypted.bodyIv,
         encryptionAlgorithm: 'AES-GCM',
         workspaceKeyId: workspaceKeyId,
         clientMessageId: 'client-' + Date.now()
