@@ -2,7 +2,6 @@ import { createContext, useContext, useEffect, useState } from 'react';
 import { io } from 'socket.io-client';
 import { supabase } from '../config/supabaseclient';
 import { useAppContext } from './AppContext';
-import { useEncryption } from './EncryptionContext';
 
 const SocketContext = createContext(null);
 
@@ -10,7 +9,6 @@ const SOCKET_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
 
 export function SocketProvider({ children }) {
   const { meta } = useAppContext();
-  const { deviceKeyId } = useEncryption();
   const [socket, setSocket] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
 
@@ -18,7 +16,7 @@ export function SocketProvider({ children }) {
   const currentUserId = meta && meta.account && meta.account.id;
 
   useEffect(() => {
-    if (!currentUserId || !deviceKeyId) {
+    if (!currentUserId) {
       if (socket) {
         socket.disconnect();
         setSocket(null);
@@ -41,8 +39,7 @@ export function SocketProvider({ children }) {
 
         socketInstance = io(SOCKET_URL, {
           auth: {
-            token: token,
-            deviceKeyId: deviceKeyId
+            token: token
           },
           transports: ['websocket']
         });
@@ -90,7 +87,7 @@ export function SocketProvider({ children }) {
         socketInstance.disconnect();
       }
     };
-  }, [currentUserId, deviceKeyId]);
+  }, [currentUserId]);
 
   // Handle joining workspace room when workspace ID changes
   useEffect(() => {

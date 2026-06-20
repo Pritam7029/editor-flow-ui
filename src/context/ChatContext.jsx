@@ -15,7 +15,7 @@ const ChatContext = createContext(null);
 
 export function ChatProvider({ children }) {
   const { workspace, meta } = useAppContext();
-  const { workspaceKey, workspaceKeyId, deviceKeyId } = useEncryption();
+  const { workspaceKey, workspaceKeyId } = useEncryption();
   const { socket, isConnected } = useSocket();
 
   const [threads, setThreads] = useState([]);
@@ -254,7 +254,7 @@ export function ChatProvider({ children }) {
 
   // Send message method
   const sendChatMessage = async (text) => {
-    if (!activeThread || !workspaceKey || !workspaceKeyId || !deviceKeyId) {
+    if (!activeThread || !workspaceKey || !workspaceKeyId) {
       throw new Error('Chat encryption is locked or active conversation is loading');
     }
 
@@ -265,7 +265,6 @@ export function ChatProvider({ children }) {
         bodyIv: encrypted.iv,
         encryptionAlgorithm: 'AES-GCM',
         workspaceKeyId: workspaceKeyId,
-        senderDeviceKeyId: deviceKeyId,
         clientMessageId: 'client-' + Date.now()
       };
 

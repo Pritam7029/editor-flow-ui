@@ -1,18 +1,3 @@
-import { openDB } from 'idb';
-
-const DB_NAME = 'editorflow_e2ee';
-const STORE_NAME = 'keys';
-
-async function getDB() {
-  return openDB(DB_NAME, 1, {
-    upgrade(db) {
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME);
-      }
-    },
-  });
-}
-
 // Helper: Convert ArrayBuffer to Base64
 export function arrayBufferToBase64(buffer) {
   const bytes = new Uint8Array(buffer);
@@ -33,42 +18,8 @@ export function base64ToArrayBuffer(base64) {
   return bytes.buffer;
 }
 
-// IndexedDB key accessors
-export async function getLocalDeviceKeyId() {
-  const db = await getDB();
-  return db.get(STORE_NAME, 'deviceKeyId');
-}
-
-export async function setLocalDeviceKeyId(id) {
-  const db = await getDB();
-  await db.put(STORE_NAME, id, 'deviceKeyId');
-}
-
-export async function getLocalPrivateKey() {
-  const db = await getDB();
-  return db.get(STORE_NAME, 'privateKey');
-}
-
-export async function getLocalPublicKey() {
-  const db = await getDB();
-  return db.get(STORE_NAME, 'publicKey');
-}
-
-export async function storeLocalKeyPair(privateKey, publicKey) {
-  const db = await getDB();
-  await db.put(STORE_NAME, privateKey, 'privateKey');
-  await db.put(STORE_NAME, publicKey, 'publicKey');
-}
-
-export async function clearLocalKeys() {
-  const db = await getDB();
-  await db.delete(STORE_NAME, 'privateKey');
-  await db.delete(STORE_NAME, 'publicKey');
-  await db.delete(STORE_NAME, 'deviceKeyId');
-}
-
-// Crypto: Generate RSA-OAEP Key Pair
-export async function generateDeviceKeyPair() {
+// Crypto: Generate RSA-OAEP Key Pair for User
+export async function generateUserKeyPair() {
   const keyPair = await window.crypto.subtle.generateKey(
     {
       name: 'RSA-OAEP',
@@ -103,6 +54,79 @@ export async function importPublicKeyJWK(jwkString) {
   );
 }
 
+// Crypto: Derive wrapping key from Recovery Answer using PBKDF2
+export async function deriveWrappingKeyFromAnswer(answer, saltBase64, iterations) {
+  const baseKey = await window.crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(answer),
+    'PBKDF2',
+    false,
+    ['deriveKey']
+  );
+
+  return window.crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt: base64ToArrayBuffer(saltBase64),
+      iterations: iterations,
+      hash: 'SHA-256',
+    },
+    baseKey,
+    {
+      name: 'AES-GCM',
+      length: 256,
+    },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+// Crypto: Encrypt private key with derived wrapping key
+export async function encryptPrivateKey(privateKey, wrappingKey) {
+  const jwk = await window.crypto.subtle.exportKey('jwk', privateKey);
+  const plainBytes = new TextEncoder().encode(JSON.stringify(jwk));
+  const iv = window.crypto.getRandomValues(new Uint8Array(12));
+
+  const cipherBuffer = await window.crypto.subtle.encrypt(
+    {
+      name: 'AES-GCM',
+      iv: iv,
+    },
+    wrappingKey,
+    plainBytes
+  );
+
+  return {
+    encryptedPrivateKey: arrayBufferToBase64(cipherBuffer),
+    iv: arrayBufferToBase64(iv),
+  };
+}
+
+// Crypto: Decrypt private key with derived wrapping key
+export async function decryptPrivateKey(encryptedPrivateKeyBase64, ivBase64, wrappingKey) {
+  const plainBytes = await window.crypto.subtle.decrypt(
+    {
+      name: 'AES-GCM',
+      iv: base64ToArrayBuffer(ivBase64),
+    },
+    wrappingKey,
+    base64ToArrayBuffer(encryptedPrivateKeyBase64)
+  );
+
+  const jwk = JSON.parse(new TextDecoder().decode(plainBytes));
+
+  return window.crypto.subtle.importKey(
+    'jwk',
+    jwk,
+    {
+      name: 'RSA-OAEP',
+      hash: 'SHA-256',
+    },
+    true,
+    ['unwrapKey']
+  );
+}
+
 // Crypto: Generate AES-GCM symmetric workspace key
 export async function generateWorkspaceKey() {
   return window.crypto.subtle.generateKey(
@@ -116,10 +140,10 @@ export async function generateWorkspaceKey() {
 }
 
 // Crypto: Wrap AES key with RSA-OAEP public key
-export async function wrapWorkspaceKey(aesKey, rsaPublicKey) {
+export async function encryptWorkspaceKeyForUser(workspaceKey, rsaPublicKey) {
   const wrappedBuffer = await window.crypto.subtle.wrapKey(
     'raw',
-    aesKey,
+    workspaceKey,
     rsaPublicKey,
     {
       name: 'RSA-OAEP',
@@ -129,8 +153,8 @@ export async function wrapWorkspaceKey(aesKey, rsaPublicKey) {
 }
 
 // Crypto: Unwrap AES key with RSA-OAEP private key
-export async function unwrapWorkspaceKey(wrappedBase64, rsaPrivateKey) {
-  const wrappedBuffer = base64ToArrayBuffer(wrappedBase64);
+export async function decryptWorkspaceKeyGrant(encryptedWorkspaceKeyBase64, rsaPrivateKey) {
+  const wrappedBuffer = base64ToArrayBuffer(encryptedWorkspaceKeyBase64);
   return window.crypto.subtle.unwrapKey(
     'raw',
     wrappedBuffer,
@@ -147,11 +171,11 @@ export async function unwrapWorkspaceKey(wrappedBase64, rsaPrivateKey) {
   );
 }
 
-// Crypto: Encrypt text with AES-GCM workspace key
-export async function encryptText(text, aesKey) {
+// Crypto: Encrypt text with AES-GCM workspace key (Chat)
+export async function encryptChatMessage(plainText, aesKey) {
   const iv = window.crypto.getRandomValues(new Uint8Array(12));
   const encoder = new TextEncoder();
-  const plaintextBytes = encoder.encode(text);
+  const plaintextBytes = encoder.encode(plainText);
   
   const ciphertextBuffer = await window.crypto.subtle.encrypt(
     {
@@ -163,15 +187,15 @@ export async function encryptText(text, aesKey) {
   );
   
   return {
-    ciphertext: arrayBufferToBase64(ciphertextBuffer),
-    iv: arrayBufferToBase64(iv),
+    encryptedBody: arrayBufferToBase64(ciphertextBuffer),
+    bodyIv: arrayBufferToBase64(iv),
   };
 }
 
-// Crypto: Decrypt ciphertext with AES-GCM workspace key
-export async function decryptText(ciphertextBase64, ivBase64, aesKey) {
-  const ciphertext = base64ToArrayBuffer(ciphertextBase64);
-  const iv = base64ToArrayBuffer(ivBase64);
+// Crypto: Decrypt ciphertext with AES-GCM workspace key (Chat)
+export async function decryptChatMessage(encryptedBodyBase64, bodyIvBase64, aesKey) {
+  const ciphertext = base64ToArrayBuffer(encryptedBodyBase64);
+  const iv = base64ToArrayBuffer(bodyIvBase64);
   
   const decryptedBuffer = await window.crypto.subtle.decrypt(
     {
@@ -206,3 +230,7 @@ export async function importRawSymmetricKey(base64Key) {
     ['encrypt', 'decrypt']
   );
 }
+
+// Aliases for compatibility
+export { encryptChatMessage as encryptText, decryptChatMessage as decryptText };
+

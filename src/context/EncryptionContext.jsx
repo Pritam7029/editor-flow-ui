@@ -1,167 +1,349 @@
 import { createContext, useContext, useEffect, useState } from 'react';
-import { supabase } from '../config/supabaseclient';
 import { useAppContext } from './AppContext';
 import {
-  generateDeviceKeyPair,
+  generateUserKeyPair,
   exportPublicKeyJWK,
-  getLocalDeviceKeyId,
-  setLocalDeviceKeyId,
-  getLocalPrivateKey,
-  getLocalPublicKey,
-  storeLocalKeyPair,
-  unwrapWorkspaceKey,
+  importPublicKeyJWK,
+  deriveWrappingKeyFromAnswer,
+  encryptPrivateKey,
+  decryptPrivateKey,
   generateWorkspaceKey,
-  wrapWorkspaceKey,
-  importPublicKeyJWK
+  encryptWorkspaceKeyForUser,
+  decryptWorkspaceKeyGrant,
+  arrayBufferToBase64
 } from '../services/e2eeCrypto';
-import { registerDeviceKey, getMyDeviceKeys } from '../services/deviceKeyApi';
-import { getMyWorkspaceKeyGrant, createWorkspaceKeyGrant, getWorkspaceKeyGrants } from '../services/encryptionApi';
+import {
+  getEncryptionIdentity,
+  createEncryptionIdentity,
+  patchRecoveryAnswer,
+  resetEncryptionIdentity
+} from '../services/encryptionIdentityApi';
+import {
+  getWorkspaceEncryptionStatus,
+  initializeWorkspaceEncryption as initWorkspaceEnc,
+  getMyWorkspaceKeyGrant,
+  createWorkspaceKeyGrant,
+  getWorkspaceMemberKeys
+} from '../services/encryptionApi';
 
 const EncryptionContext = createContext(null);
 
 export function EncryptionProvider({ children }) {
   const { meta } = useAppContext();
-  const [deviceKeyId, setDeviceKeyId] = useState(null);
+  
+  // Identity states
+  const [encryptionIdentity, setEncryptionIdentity] = useState(null);
+  const [isEncryptionIdentityLoaded, setIsEncryptionIdentityLoaded] = useState(false);
+  const [isUnlocked, setIsUnlocked] = useState(false);
+  
+  // Keys in memory
   const [publicKey, setPublicKey] = useState(null);
+  const [publicKeyJwk, setPublicKeyJwk] = useState(null);
   const [privateKey, setPrivateKey] = useState(null);
+  
+  // Workspace E2EE states
   const [workspaceKey, setWorkspaceKey] = useState(null);
   const [workspaceKeyId, setWorkspaceKeyId] = useState(null);
   const [workspaceKeyVersion, setWorkspaceKeyVersion] = useState(null);
   const [isWorkspaceLocked, setIsWorkspaceLocked] = useState(false);
-  const [isEncryptionSetup, setIsEncryptionSetup] = useState(false);
+  const [isWorkspaceEncryptionEnabled, setIsWorkspaceEncryptionEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const currentWorkspaceId = meta && meta.currentWorkspaceId;
   const currentUserId = meta && meta.account && meta.account.id;
 
-  // 1. Initialise device key pair
+  // 1. Initialise and load user encryption identity metadata
   useEffect(() => {
     if (!currentUserId) {
+      setEncryptionIdentity(null);
+      setIsEncryptionIdentityLoaded(false);
+      setIsUnlocked(false);
+      setPublicKey(null);
+      setPublicKeyJwk(null);
+      setPrivateKey(null);
+      setWorkspaceKey(null);
       setLoading(false);
       return;
     }
 
-    async function initDeviceKey() {
+    async function loadIdentity() {
       try {
-        let localKeyId = await getLocalDeviceKeyId();
-        let localPrivate = await getLocalPrivateKey();
-        let localPublic = await getLocalPublicKey();
-
-        if (!localKeyId || !localPrivate || !localPublic) {
-          console.log('No local device key found. Generating new key pair...');
-          const keyPair = await generateDeviceKeyPair();
-          const jwk = await exportPublicKeyJWK(keyPair.publicKey);
-          
-          const deviceName = 'Browser - ' + navigator.userAgent.slice(0, 30);
-          const regResult = await registerDeviceKey({
-            deviceName,
-            publicKey: jwk,
-            algorithm: 'RSA-OAEP'
-          });
-
-          const registeredKey = regResult && regResult.deviceKey;
-          if (registeredKey && registeredKey.id) {
-            await setLocalDeviceKeyId(registeredKey.id);
-            await storeLocalKeyPair(keyPair.privateKey, keyPair.publicKey);
-            
-            localKeyId = registeredKey.id;
-            localPrivate = keyPair.privateKey;
-            localPublic = keyPair.publicKey;
-          }
+        setLoading(true);
+        const result = await getEncryptionIdentity();
+        const identity = result && result.data && result.data.identity;
+        
+        if (identity) {
+          setEncryptionIdentity(identity);
+          const pubKey = await importPublicKeyJWK(identity.publicKey);
+          setPublicKey(pubKey);
+          setPublicKeyJwk(identity.publicKey);
+        } else {
+          setEncryptionIdentity(null);
+          setPublicKey(null);
+          setPublicKeyJwk(null);
         }
-
-        setDeviceKeyId(localKeyId);
-        setPrivateKey(localPrivate);
-        setPublicKey(localPublic);
+        setIsEncryptionIdentityLoaded(true);
       } catch (err) {
-        console.error('Failed to initialize E2EE device key:', err);
+        console.error('Failed to load encryption identity:', err);
       } finally {
         setLoading(false);
       }
     }
 
-    initDeviceKey();
+    loadIdentity();
   }, [currentUserId]);
 
-  // 2. Load workspace key grant when workspace or deviceKey changes
+  // 2. Load workspace encryption symmetric key when workspace or keys change
   useEffect(() => {
-    if (!currentWorkspaceId || !deviceKeyId || !privateKey) {
+    if (!currentWorkspaceId) {
       setWorkspaceKey(null);
       setWorkspaceKeyId(null);
       setWorkspaceKeyVersion(null);
       setIsWorkspaceLocked(false);
-      setIsEncryptionSetup(false);
+      setIsWorkspaceEncryptionEnabled(false);
       return;
     }
 
-    async function loadWorkspaceKey() {
+    let active = true;
+
+    async function checkWorkspaceEncryption() {
       try {
-        setIsWorkspaceLocked(false);
+        // Query status
+        const statusResult = await getWorkspaceEncryptionStatus(currentWorkspaceId);
+        const statusData = statusResult && statusResult.data;
+        const enabled = statusData && statusData.enabled;
         
-        // Check if encryption is set up at all by checking any active grants
-        const grantsResult = await getWorkspaceKeyGrants(currentWorkspaceId);
-        const hasGrants = !!(grantsResult && grantsResult.grants && grantsResult.grants.length > 0);
-        setIsEncryptionSetup(hasGrants);
+        if (!active) return;
+        setIsWorkspaceEncryptionEnabled(!!enabled);
 
-        const grantResult = await getMyWorkspaceKeyGrant(currentWorkspaceId, deviceKeyId);
-        const grant = grantResult && grantResult.grant;
-
-        if (grant && grant.encrypted_workspace_key) {
-          const unwrapped = await unwrapWorkspaceKey(grant.encrypted_workspace_key, privateKey);
-          setWorkspaceKey(unwrapped);
-          setWorkspaceKeyId(grant.workspace_key_id);
+        if (enabled) {
+          // Encryption is enabled, get my grant
+          const grantResult = await getMyWorkspaceKeyGrant(currentWorkspaceId);
+          const grant = grantResult && grantResult.grant;
           
-          const keyDetails = grant.workspace_encryption_keys;
-          if (keyDetails) {
-            setWorkspaceKeyVersion(keyDetails.key_version);
+          if (!active) return;
+
+          if (grant && grant.encrypted_workspace_key) {
+            if (privateKey) {
+              const wsKey = await decryptWorkspaceKeyGrant(grant.encrypted_workspace_key, privateKey);
+              if (active) {
+                setWorkspaceKey(wsKey);
+                setWorkspaceKeyId(grant.workspace_key_id);
+                
+                const wKeys = grant.workspace_encryption_keys;
+                if (wKeys) {
+                  setWorkspaceKeyVersion(wKeys.key_version);
+                }
+                setIsWorkspaceLocked(false);
+              }
+            } else {
+              // Encryption is enabled & grant exists, but private key is not unlocked in memory yet
+              if (active) {
+                setWorkspaceKey(null);
+                setIsWorkspaceLocked(true);
+              }
+            }
+          } else {
+            // Workspace encryption enabled but no grant for this user (yet)
+            if (active) {
+              setWorkspaceKey(null);
+              setIsWorkspaceLocked(true);
+            }
           }
-          setIsWorkspaceLocked(false);
         } else {
-          // No grant found. This device is pending approval or workspace E2EE is not set up
-          console.log('No key grant found for this device.');
-          setWorkspaceKey(null);
-          setWorkspaceKeyId(null);
-          setWorkspaceKeyVersion(null);
-          setIsWorkspaceLocked(true);
+          // Encryption not enabled for this workspace
+          if (active) {
+            setWorkspaceKey(null);
+            setIsWorkspaceLocked(false);
+          }
         }
       } catch (err) {
-        console.error('Failed to unwrap workspace key:', err);
-        setWorkspaceKey(null);
-        setIsWorkspaceLocked(true);
+        console.error('Failed to load workspace encryption key:', err);
+        if (active) {
+          setWorkspaceKey(null);
+          setIsWorkspaceLocked(true);
+        }
       }
     }
 
-    loadWorkspaceKey();
-  }, [currentWorkspaceId, deviceKeyId, privateKey]);
+    checkWorkspaceEncryption();
 
-  // Setup/Initialize Workspace Key (Owner flow)
+    return () => {
+      active = false;
+    };
+  }, [currentWorkspaceId, privateKey]);
+
+  // Unlock identity using recovery question answer
+  const unlockIdentity = async (answer) => {
+    if (!encryptionIdentity) {
+      throw new Error('No encryption identity configured for this account');
+    }
+    
+    // Derive wrapping key
+    const wrappingKey = await deriveWrappingKeyFromAnswer(
+      answer,
+      encryptionIdentity.kdfSalt,
+      encryptionIdentity.kdfIterations
+    );
+
+    // Decrypt private key
+    const privKey = await decryptPrivateKey(
+      encryptionIdentity.encryptedPrivateKey,
+      encryptionIdentity.privateKeyIv,
+      wrappingKey
+    );
+
+    setPrivateKey(privKey);
+    setIsUnlocked(true);
+    return true;
+  };
+
+  // Configure new encryption identity (first-time setup)
+  const setupEncryptionIdentity = async (questionKey, questionText, answer) => {
+    try {
+      setLoading(true);
+      
+      // 1. Generate key pair
+      const keyPair = await generateUserKeyPair();
+      const pubKeyJwkString = await exportPublicKeyJWK(keyPair.publicKey);
+
+      // 2. Generate random KDF salt
+      const saltBytes = window.crypto.getRandomValues(new Uint8Array(16));
+      const saltBase64 = arrayBufferToBase64(saltBytes);
+
+      // 3. Derive wrapping key
+      const wrappingKey = await deriveWrappingKeyFromAnswer(answer, saltBase64, 600000);
+
+      // 4. Encrypt private key
+      const encryptionResult = await encryptPrivateKey(keyPair.privateKey, wrappingKey);
+
+      // 5. Save to backend
+      const result = await createEncryptionIdentity({
+        publicKey: pubKeyJwkString,
+        encryptedPrivateKey: encryptionResult.encryptedPrivateKey,
+        privateKeyIv: encryptionResult.iv,
+        kdfSalt: saltBase64,
+        kdfIterations: 600000,
+        kdfAlgorithm: 'PBKDF2',
+        keyAlgorithm: 'RSA-OAEP',
+        recoveryQuestionKey: questionKey,
+        recoveryQuestionText: questionText
+      });
+
+      const identity = result && result.data && result.data.identity;
+      if (identity) {
+        setEncryptionIdentity(identity);
+        setPublicKey(keyPair.publicKey);
+        setPublicKeyJwk(pubKeyJwkString);
+        setPrivateKey(keyPair.privateKey);
+        setIsUnlocked(true);
+      }
+      return true;
+    } catch (err) {
+      console.error('Failed to set up encryption identity:', err);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Change recovery question / answer
+  const changeRecoveryAnswer = async (currentAnswer, newQuestionKey, newQuestionText, newAnswer) => {
+    try {
+      setLoading(true);
+      
+      let unlockedPrivateKey = privateKey;
+      if (!isUnlocked || !unlockedPrivateKey) {
+        // Unlock first
+        const wrappingKey = await deriveWrappingKeyFromAnswer(
+          currentAnswer,
+          encryptionIdentity.kdfSalt,
+          encryptionIdentity.kdfIterations
+        );
+        unlockedPrivateKey = await decryptPrivateKey(
+          encryptionIdentity.encryptedPrivateKey,
+          encryptionIdentity.privateKeyIv,
+          wrappingKey
+        );
+      }
+
+      // Generate new salt and re-encrypt private key with new answer
+      const saltBytes = window.crypto.getRandomValues(new Uint8Array(16));
+      const saltBase64 = arrayBufferToBase64(saltBytes);
+      const newWrappingKey = await deriveWrappingKeyFromAnswer(newAnswer, saltBase64, 600000);
+      const encryptionResult = await encryptPrivateKey(unlockedPrivateKey, newWrappingKey);
+
+      // Update backend
+      const result = await patchRecoveryAnswer({
+        encryptedPrivateKey: encryptionResult.encryptedPrivateKey,
+        privateKeyIv: encryptionResult.iv,
+        kdfSalt: saltBase64,
+        kdfIterations: 600000,
+        recoveryQuestionKey: newQuestionKey,
+        recoveryQuestionText: newQuestionText
+      });
+
+      const identity = result && result.data && result.data.identity;
+      if (identity) {
+        setEncryptionIdentity(identity);
+        setPrivateKey(unlockedPrivateKey);
+        setIsUnlocked(true);
+      }
+      return true;
+    } catch (err) {
+      console.error('Failed to change recovery answer:', err);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Reset E2EE identity (dangerous reset flow)
+  const resetIdentity = async () => {
+    try {
+      setLoading(true);
+      await resetEncryptionIdentity();
+      setEncryptionIdentity(null);
+      setIsUnlocked(false);
+      setPublicKey(null);
+      setPublicKeyJwk(null);
+      setPrivateKey(null);
+      setWorkspaceKey(null);
+      setWorkspaceKeyId(null);
+      setWorkspaceKeyVersion(null);
+      setIsWorkspaceLocked(false);
+      setIsWorkspaceEncryptionEnabled(false);
+    } catch (err) {
+      console.error('Failed to reset encryption identity:', err);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Initialize workspace encryption (Owner symmetric key generation)
   const initializeWorkspaceEncryption = async () => {
-    if (!currentWorkspaceId || !publicKey || !currentUserId || !deviceKeyId) {
-      throw new Error('Missing encryption state or workspace credentials');
+    if (!currentWorkspaceId || !publicKey || !currentUserId) {
+      throw new Error('Missing encryption credentials or workspace context');
     }
 
     try {
-      console.log('Generating new workspace symmetric key...');
       const aesKey = await generateWorkspaceKey();
-      const wrappedKey = await wrapWorkspaceKey(aesKey, publicKey);
+      const wrappedKey = await encryptWorkspaceKeyForUser(aesKey, publicKey);
 
-      const grantData = {
-        keyVersion: 1,
+      const result = await initWorkspaceEnc(currentWorkspaceId, {
         keyAlgorithm: 'AES-GCM',
-        userId: currentUserId,
-        deviceKeyId: deviceKeyId,
         encryptedWorkspaceKey: wrappedKey,
         grantAlgorithm: 'RSA-OAEP'
-      };
+      });
 
-      const result = await createWorkspaceKeyGrant(currentWorkspaceId, grantData);
-      const grant = result && result.grant;
+      const grant = result && result.data && result.data.grant;
       if (grant) {
         setWorkspaceKey(aesKey);
         setWorkspaceKeyId(grant.workspace_key_id);
         setWorkspaceKeyVersion(1);
         setIsWorkspaceLocked(false);
-        setIsEncryptionSetup(true);
+        setIsWorkspaceEncryptionEnabled(true);
         return aesKey;
       }
     } catch (err) {
@@ -170,27 +352,24 @@ export function EncryptionProvider({ children }) {
     }
   };
 
-  // Grant access to a new user device
-  const grantWorkspaceKeyAccess = async (targetUserId, targetDeviceKeyId, targetPublicKeyJwk) => {
+  // Grant access to a new user
+  const grantWorkspaceKeyAccess = async (targetUserId, targetPublicKeyJwkString) => {
     if (!workspaceKey || !currentWorkspaceId) {
-      throw new Error('Workspace key is not unlocked on this device');
+      throw new Error('Workspace key is not unlocked in memory');
     }
 
     try {
-      const parsedPublicKey = await importPublicKeyJWK(targetPublicKeyJwk);
-      const wrappedKey = await wrapWorkspaceKey(workspaceKey, parsedPublicKey);
+      const targetPublicKey = await importPublicKeyJWK(targetPublicKeyJwkString);
+      const wrappedKey = await encryptWorkspaceKeyForUser(workspaceKey, targetPublicKey);
 
-      const grantData = {
+      await createWorkspaceKeyGrant(currentWorkspaceId, {
         keyVersion: workspaceKeyVersion || 1,
         keyAlgorithm: 'AES-GCM',
-        userId: targetUserId,
-        deviceKeyId: targetDeviceKeyId,
+        recipientUserId: targetUserId,
         encryptedWorkspaceKey: wrappedKey,
         grantAlgorithm: 'RSA-OAEP'
-      };
-
-      await createWorkspaceKeyGrant(currentWorkspaceId, grantData);
-      console.log(`Successfully granted key access to user ${targetUserId} device ${targetDeviceKeyId}`);
+      });
+      console.log('Granted workspace key access to user:', targetUserId);
     } catch (err) {
       console.error('Failed to grant workspace key access:', err);
       throw err;
@@ -200,15 +379,22 @@ export function EncryptionProvider({ children }) {
   return (
     <EncryptionContext.Provider
       value={{
-        deviceKeyId,
+        encryptionIdentity,
+        isEncryptionIdentityLoaded,
+        isUnlocked,
         publicKey,
+        publicKeyJwk,
         privateKey,
         workspaceKey,
         workspaceKeyId,
         workspaceKeyVersion,
         isWorkspaceLocked,
-        isEncryptionSetup,
+        isWorkspaceEncryptionEnabled,
         loading,
+        unlockIdentity,
+        setupEncryptionIdentity,
+        changeRecoveryAnswer,
+        resetIdentity,
         initializeWorkspaceEncryption,
         grantWorkspaceKeyAccess
       }}

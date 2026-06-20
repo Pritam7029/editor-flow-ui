@@ -5,6 +5,8 @@ import { useEncryption } from '../../context/EncryptionContext';
 import { CHANNELS } from '../../utils/constants';
 import { isAdmin } from '../../utils/rbac';
 import { useFullscreenPanel } from '../../hooks/useFullscreenPanel';
+import EncryptionSetup from '../security/EncryptionSetup';
+import UnlockEncryption from '../security/UnlockEncryption';
 import {
   extractMentions,
   formatTime,
@@ -66,8 +68,11 @@ export default function ChatPanel({ onOpenTeamModal, mobileOpen, onCloseMobile }
   } = useChat();
 
   const { 
+    encryptionIdentity,
+    isEncryptionIdentityLoaded,
+    isUnlocked,
     isWorkspaceLocked, 
-    isEncryptionSetup,
+    isWorkspaceEncryptionEnabled,
     initializeWorkspaceEncryption, 
     loading: encryptionLoading 
   } = useEncryption();
@@ -92,6 +97,27 @@ export default function ChatPanel({ onOpenTeamModal, mobileOpen, onCloseMobile }
       setMobileView('list');
     }
   }, [mobileOpen]);
+
+  // 1. Check if encryption metadata is loading
+  if (encryptionLoading || !isEncryptionIdentityLoaded) {
+    return (
+      <aside className={`chat-panel ${mobileOpen ? 'mobile-open' : ''} ${isFullscreen ? 'panel-fullscreen' : ''}`}>
+        <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center' }}>
+          <div className="empty-card">Loading security settings...</div>
+        </div>
+      </aside>
+    );
+  }
+
+  // 2. Render setup overlay if user has no E2EE identity configured
+  if (!encryptionIdentity) {
+    return <EncryptionSetup />;
+  }
+
+  // 3. Render unlock overlay if user has identity but it is locked in memory
+  if (!isUnlocked) {
+    return <UnlockEncryption />;
+  }
 
   const activeMessages = useMemo(() => {
     if (!e2eeMessages) return [];
@@ -241,21 +267,28 @@ export default function ChatPanel({ onOpenTeamModal, mobileOpen, onCloseMobile }
             {isWorkspaceLocked ? (
               <div className="empty-card" style={{ display: 'flex', flexDirection: 'column', height: '100%', justifyContent: 'center', alignItems: 'center', gap: '16px', padding: '32px', textAlign: 'center' }}>
                 <div style={{ fontSize: '48px' }}>🔒</div>
-                <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 600 }}>Chat Workspace Locked</h3>
-                <p style={{ maxWidth: '300px', fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>
-                  This device does not have access to the workspace encryption key yet.
+                <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 600 }}>Workspace Key Access Required</h3>
+                <p style={{ maxWidth: '340px', fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>
+                  Your encryption identity is active, but you have not been granted access to this workspace's symmetric key yet.
                 </p>
-                {isEncryptionSetup ? (
-                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', background: 'var(--bg-card)', padding: '10px 14px', borderRadius: '8px', border: '1px solid var(--border)' }}>
-                    Waiting for approval. Ask an approved device to grant access to this device.
-                  </div>
-                ) : isOwner ? (
-                  <button className="primary-button" onClick={initializeWorkspaceEncryption} style={{ padding: '8px 16px', fontSize: '13px', borderRadius: '8px' }}>
-                    Set Up Workspace Encryption
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)', background: 'var(--bg-card)', padding: '10px 14px', borderRadius: '8px', border: '1px solid var(--border)' }}>
+                  Ask an approved workspace member or owner to grant key access to your profile.
+                </div>
+              </div>
+            ) : !isWorkspaceEncryptionEnabled ? (
+              <div className="empty-card" style={{ display: 'flex', flexDirection: 'column', height: '100%', justifyContent: 'center', alignItems: 'center', gap: '16px', padding: '32px', textAlign: 'center' }}>
+                <div style={{ fontSize: '48px' }}>🔐</div>
+                <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 600 }}>Enable Workspace Encryption</h3>
+                <p style={{ maxWidth: '340px', fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>
+                  End-to-End Encryption is not yet enabled for this workspace. Enable it to secure all chat thread messages.
+                </p>
+                {isOwner ? (
+                  <button className="primary-button" onClick={initializeWorkspaceEncryption} style={{ padding: '10px 20px', fontSize: '13px', borderRadius: '8px', background: 'var(--violet)', border: 'none', color: '#fff', fontWeight: '600' }}>
+                    Initialize Workspace E2EE
                   </button>
                 ) : (
                   <div style={{ fontSize: '12px', color: 'var(--text-muted)', background: 'var(--bg-card)', padding: '10px 14px', borderRadius: '8px', border: '1px solid var(--border)' }}>
-                    Waiting for the owner to set up workspace encryption.
+                    Waiting for the workspace owner to initialize E2EE.
                   </div>
                 )}
               </div>

@@ -6,8 +6,8 @@ import { getAvatarInitials } from '../../utils/helpers';
 import { supabase } from '../../config/supabaseclient';
 import { initAvatarUpload, completeAvatarUpload, updateMyProfile } from '../../services/profileApi';
 import { uploadFileWithProgress } from '../../services/fileApi';
-import { getMyDeviceKeys, revokeDeviceKey } from '../../services/deviceKeyApi';
-import { getWorkspaceDeviceKeys, getWorkspaceKeyGrants } from '../../services/encryptionApi';
+import { getWorkspaceKeyGrants, getWorkspaceMemberKeys } from '../../services/encryptionApi';
+import ChangeRecoveryAnswer from '../security/ChangeRecoveryAnswer';
 
 function formatBytes(bytes, decimals = 1) {
   if (!bytes || Number(bytes) === 0) return '0 Bytes';
@@ -34,9 +34,12 @@ export default function AccountDrawer({ isOpen, onClose, onOpenWorkspaceModal })
   } = useAppContext();
 
   const { 
-    deviceKeyId: currentDeviceKeyId, 
-    workspaceKey, 
-    grantWorkspaceKeyAccess 
+    encryptionIdentity,
+    workspaceKey,
+    workspaceKeyVersion,
+    isWorkspaceEncryptionEnabled,
+    grantWorkspaceKeyAccess,
+    resetIdentity
   } = useEncryption();
 
   const [form, setForm] = useState(meta.account);
@@ -44,11 +47,11 @@ export default function AccountDrawer({ isOpen, onClose, onOpenWorkspaceModal })
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState(null);
 
-  // Devices state
-  const [myDevices, setMyDevices] = useState([]);
-  const [workspaceDevices, setWorkspaceDevices] = useState([]);
-  const [workspaceGrants, setWorkspaceGrants] = useState([]);
-  const [loadingDevices, setLoadingDevices] = useState(false);
+  // Grants & Recovery states
+  const [isChangingRecovery, setIsChangingRecovery] = useState(false);
+  const [memberKeys, setMemberKeys] = useState([]);
+  const [grants, setGrants] = useState([]);
+  const [loadingGrants, setLoadingGrants] = useState(false);
 
   const visibleWorkspaces = useMemo(() => {
     return backendWorkspaces && backendWorkspaces.length > 0
@@ -70,30 +73,24 @@ export default function AccountDrawer({ isOpen, onClose, onOpenWorkspaceModal })
     }
   }, [isOpen, meta.account]);
 
-  const loadDeviceManagementData = async () => {
-    if (!isOpen) return;
+  const loadGrantsData = async () => {
+    if (!isOpen || !workspaceKey || !meta || !meta.currentWorkspaceId) return;
     try {
-      setLoadingDevices(true);
-      const myDevs = await getMyDeviceKeys();
-      setMyDevices(myDevs && myDevs.deviceKeys ? myDevs.deviceKeys : []);
-
-      if (workspaceKey && meta && meta.currentWorkspaceId) {
-        const workspaceId = meta.currentWorkspaceId;
-        const allKeys = await getWorkspaceDeviceKeys(workspaceId);
-        setWorkspaceDevices(allKeys || []);
-
-        const grantsResult = await getWorkspaceKeyGrants(workspaceId);
-        setWorkspaceGrants(grantsResult && grantsResult.grants ? grantsResult.grants : []);
-      }
+      setLoadingGrants(true);
+      const mKeys = await getWorkspaceMemberKeys(meta.currentWorkspaceId);
+      const grantsResult = await getWorkspaceKeyGrants(meta.currentWorkspaceId);
+      
+      setMemberKeys(mKeys || []);
+      setGrants(grantsResult && grantsResult.grants ? grantsResult.grants : []);
     } catch (err) {
-      console.error('Failed to load device management data:', err);
+      console.error('Failed to load grants data:', err);
     } finally {
-      setLoadingDevices(false);
+      setLoadingGrants(false);
     }
   };
 
   useEffect(() => {
-    loadDeviceManagementData();
+    loadGrantsData();
   }, [isOpen, workspaceKey, meta && meta.currentWorkspaceId]);
 
   const handleAvatarChange = async (event) => {
@@ -207,86 +204,119 @@ export default function AccountDrawer({ isOpen, onClose, onOpenWorkspaceModal })
             </div>
           </section>
 
-          {/* E2EE Device Management Section */}
+          {/* E2EE Recovery & Access Management Section */}
           <section className="form-stack" style={{ borderTop: '1px solid var(--border)', paddingTop: '16px', marginTop: '16px' }}>
-            <h4 style={{ margin: '0 0 12px' }}>🔒 E2EE Device Management</h4>
+            <h4 style={{ margin: '0 0 12px' }}>🔒 Chat Encryption Settings</h4>
             
-            <div style={{ fontSize: '0.85rem', background: 'var(--bg-card)', padding: '10px', borderRadius: '8px', border: '1px solid var(--border)', marginBottom: '12px' }}>
-              <div style={{ color: 'var(--text-secondary)' }}>My Device Key ID:</div>
-              <code style={{ fontSize: '0.75rem', display: 'block', wordBreak: 'break-all', marginTop: '4px' }}>{currentDeviceKeyId || 'Initializing...'}</code>
-            </div>
-
-            <h5 style={{ margin: '8px 0 6px', fontSize: '0.9rem', color: 'var(--text-secondary)' }}>My Trusted Devices</h5>
-            {myDevices.length === 0 && <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>No other registered devices.</div>}
-            {myDevices.map(d => (
-              <div key={d.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem', padding: '8px 0', borderBottom: '1px dashed var(--border)' }}>
-                <div style={{ marginRight: '12px', overflow: 'hidden' }}>
-                  <strong style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.device_name}</strong>
-                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Registered: {new Date(d.created_at).toLocaleDateString()}</span>
-                  {d.id === currentDeviceKeyId && <span style={{ marginLeft: '6px', color: 'var(--primary)', fontWeight: 'bold', fontSize: '0.75rem' }}>(Current)</span>}
+            {encryptionIdentity ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div style={{ fontSize: '0.85rem', background: 'var(--bg-card)', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border)' }}>
+                  <div style={{ color: 'var(--text-secondary)', fontWeight: '600', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>E2EE status</div>
+                  <div style={{ color: 'var(--emerald)', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '4px', fontSize: '13px' }}>
+                    🟢 Active & Session Unlocked
+                  </div>
+                  <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', marginTop: '6px' }}>
+                    <strong>Recovery Question:</strong> {encryptionIdentity.recoveryQuestionText}
+                  </div>
                 </div>
-                {d.id !== currentDeviceKeyId && (
+
+                {!isChangingRecovery ? (
+                  <button 
+                    className="ghost-button small" 
+                    onClick={() => setIsChangingRecovery(true)}
+                    style={{ alignSelf: 'flex-start' }}
+                  >
+                    Change Recovery Question/Answer
+                  </button>
+                ) : (
+                  <ChangeRecoveryAnswer 
+                    onCancel={() => setIsChangingRecovery(false)} 
+                    onSuccess={() => {
+                      setIsChangingRecovery(false);
+                      loadGrantsData();
+                    }}
+                  />
+                )}
+
+                <div style={{ borderTop: '1px solid rgba(255, 255, 255, 0.05)', padding: '12px 0 0 0', marginTop: '8px' }}>
+                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'block', lineHeight: '1.4' }}>
+                    If you lose your recovery answer, you can reset your identity. 
+                    Warning: This will generate new keys and make all past chat history permanently undecryptable.
+                  </span>
                   <button 
                     className="danger-button small" 
                     onClick={async () => {
-                      if (window.confirm('Are you sure you want to revoke trust for this device? It will lose access to E2EE chat.')) {
+                      if (window.confirm('CRITICAL WARNING: Are you absolutely sure you want to reset your encryption identity? All existing encrypted chats in all workspaces will become permanently undecryptable.')) {
                         try {
-                          await revokeDeviceKey(d.id);
-                          loadDeviceManagementData();
+                          await resetIdentity();
+                          window.alert('Encryption identity reset successfully.');
+                          onClose();
                         } catch (e) {
-                          window.alert('Failed to revoke device: ' + e.message);
+                          window.alert('Failed to reset identity: ' + e.message);
                         }
                       }
                     }}
-                    style={{ padding: '4px 10px', fontSize: '0.75rem' }}
+                    style={{ display: 'block', marginTop: '8px', padding: '6px 12px' }}
                   >
-                    Revoke
+                    ⚠️ Reset Encryption Identity
                   </button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                Encryption is not configured for your account. Go to the Chat panel to set it up.
+              </div>
+            )}
+
+            {/* Workspace Member key grants */}
+            {workspaceKey && isWorkspaceEncryptionEnabled && (
+              <div style={{ borderTop: '1px solid var(--border)', paddingTop: '16px', marginTop: '16px' }}>
+                <h5 style={{ margin: '0 0 10px', fontSize: '0.9rem', color: 'var(--text-secondary)' }}>E2EE Workspace Access Grants</h5>
+                {loadingGrants ? (
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Checking workspace keys...</div>
+                ) : (
+                  (() => {
+                    const pendingGrants = memberKeys.filter(mk => mk.user_id !== (meta.account && meta.account.id) && !grants.some(g => g.recipient_user_id === mk.user_id));
+                    if (pendingGrants.length === 0) {
+                      return <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>All active members in this workspace have key access.</div>;
+                    }
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {pendingGrants.map(memberKey => {
+                          const editor = workspace && workspace.editors 
+                            ? workspace.editors.find(e => e.id === memberKey.user_id) 
+                            : null;
+                          const nameDisplay = editor ? editor.name : memberKey.user_id.slice(0, 8);
+                          
+                          return (
+                            <div key={memberKey.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem', padding: '8px 10px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.04)', borderRadius: '6px' }}>
+                              <div>
+                                <strong>{nameDisplay}</strong>
+                                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Active Identity</div>
+                              </div>
+                              <button
+                                className="primary-button small"
+                                onClick={async () => {
+                                  try {
+                                    await grantWorkspaceKeyAccess(memberKey.user_id, memberKey.public_key);
+                                    window.alert(`Access granted to ${nameDisplay}!`);
+                                    loadGrantsData();
+                                  } catch (err) {
+                                    window.alert('Failed to grant access: ' + err.message);
+                                  }
+                                }}
+                                style={{ padding: '6px 12px', fontSize: '0.75rem', borderRadius: '4px', background: 'var(--violet)', border: 'none', color: '#fff' }}
+                              >
+                                🔐 Grant Key
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()
                 )}
               </div>
-            ))}
-
-            {/* Workspace Approval list */}
-            {workspaceKey && workspaceDevices.length > 0 && (
-              <>
-                <h5 style={{ margin: '16px 0 6px', fontSize: '0.9rem', color: 'var(--text-secondary)' }}>Workspace Device Approvals</h5>
-                {workspaceDevices.map(kd => {
-                  const hasGrant = workspaceGrants.some(g => g.device_key_id === kd.id);
-                  const editorName = workspace && workspace.editors 
-                    ? (workspace.editors.find(e => e.id === kd.user_id) && workspace.editors.find(e => e.id === kd.user_id).name) 
-                    : null;
-
-                  return (
-                    <div key={kd.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem', padding: '8px 0', borderBottom: '1px dashed var(--border)' }}>
-                      <div style={{ marginRight: '12px' }}>
-                        <strong style={{ display: 'block' }}>{kd.device_name}</strong>
-                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                          User: {editorName || kd.user_id.slice(0, 8)}
-                        </span>
-                      </div>
-                      {hasGrant ? (
-                        <span style={{ color: '#22c55e', fontSize: '0.8rem', fontWeight: 600 }}>🟢 Approved</span>
-                      ) : (
-                        <button 
-                          className="primary-button small" 
-                          onClick={async () => {
-                            try {
-                              await grantWorkspaceKeyAccess(kd.user_id, kd.id, kd.public_key);
-                              window.alert('Device approved successfully! Workspace key granted.');
-                              loadDeviceManagementData();
-                            } catch (e) {
-                              window.alert('Failed to approve device: ' + e.message);
-                            }
-                          }}
-                          style={{ padding: '4px 10px', fontSize: '0.75rem', borderRadius: '4px' }}
-                        >
-                          🔐 Approve
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
-              </>
             )}
           </section>
 
