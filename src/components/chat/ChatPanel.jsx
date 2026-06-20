@@ -98,27 +98,6 @@ export default function ChatPanel({ onOpenTeamModal, mobileOpen, onCloseMobile }
     }
   }, [mobileOpen]);
 
-  // 1. Check if encryption metadata is loading
-  if (encryptionLoading || !isEncryptionIdentityLoaded) {
-    return (
-      <aside className={`chat-panel ${mobileOpen ? 'mobile-open' : ''} ${isFullscreen ? 'panel-fullscreen' : ''}`}>
-        <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center' }}>
-          <div className="empty-card">Loading security settings...</div>
-        </div>
-      </aside>
-    );
-  }
-
-  // 2. Render setup overlay if user has no E2EE identity configured
-  if (!encryptionIdentity) {
-    return <EncryptionSetup />;
-  }
-
-  // 3. Render unlock overlay if user has identity but it is locked in memory
-  if (!isUnlocked) {
-    return <UnlockEncryption />;
-  }
-
   const activeMessages = useMemo(() => {
     if (!e2eeMessages) return [];
     
@@ -150,6 +129,27 @@ export default function ChatPanel({ onOpenTeamModal, mobileOpen, onCloseMobile }
       scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
     }
   }, [activeMessages, typingUsers]);
+
+  // 1. Check if encryption metadata is loading
+  if (encryptionLoading || !isEncryptionIdentityLoaded) {
+    return (
+      <aside className={`chat-panel ${mobileOpen ? 'mobile-open' : ''} ${isFullscreen ? 'panel-fullscreen' : ''}`}>
+        <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center' }}>
+          <div className="empty-card">Loading security settings...</div>
+        </div>
+      </aside>
+    );
+  }
+
+  // 2. Render setup overlay if user has no E2EE identity configured
+  if (!encryptionIdentity) {
+    return <EncryptionSetup />;
+  }
+
+  // 3. Render unlock overlay if user has identity but it is locked in memory
+  if (!isUnlocked) {
+    return <UnlockEncryption />;
+  }
 
   const submitMessage = () => {
     if (!text.trim()) return;
