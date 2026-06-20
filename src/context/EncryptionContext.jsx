@@ -70,7 +70,7 @@ export function EncryptionProvider({ children }) {
       try {
         setLoading(true);
         const result = await getEncryptionIdentity();
-        const identity = result && result.data && result.data.identity;
+        const identity = result && result.identity;
         
         if (identity) {
           setEncryptionIdentity(identity);
@@ -113,7 +113,7 @@ export function EncryptionProvider({ children }) {
       try {
         // Query status
         const statusResult = await getWorkspaceEncryptionStatus(currentWorkspaceId);
-        const statusData = statusResult && statusResult.data;
+        const statusData = statusResult;
         const enabled = statusData && statusData.enabled;
         
         if (!active) return;
@@ -233,7 +233,7 @@ export function EncryptionProvider({ children }) {
         recoveryQuestionText: questionText
       });
 
-      const identity = result && result.data && result.data.identity;
+      const identity = result && result.identity;
       if (identity) {
         setEncryptionIdentity(identity);
         setPublicKey(keyPair.publicKey);
@@ -286,7 +286,7 @@ export function EncryptionProvider({ children }) {
         recoveryQuestionText: newQuestionText
       });
 
-      const identity = result && result.data && result.data.identity;
+      const identity = result && result.identity;
       if (identity) {
         setEncryptionIdentity(identity);
         setPrivateKey(unlockedPrivateKey);
@@ -340,7 +340,7 @@ export function EncryptionProvider({ children }) {
         grantAlgorithm: 'RSA-OAEP'
       });
 
-      const grant = result && result.data && result.data.grant;
+      const grant = result && result.grant;
       if (grant) {
         setWorkspaceKey(aesKey);
         setWorkspaceKeyId(grant.workspace_key_id);
