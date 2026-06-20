@@ -82,10 +82,13 @@ export function EncryptionProvider({ children }) {
           setPublicKey(null);
           setPublicKeyJwk(null);
         }
-        setIsEncryptionIdentityLoaded(true);
       } catch (err) {
         console.error('Failed to load encryption identity:', err);
+        setEncryptionIdentity(null);
+        setPublicKey(null);
+        setPublicKeyJwk(null);
       } finally {
+        setIsEncryptionIdentityLoaded(true);
         setLoading(false);
       }
     }
