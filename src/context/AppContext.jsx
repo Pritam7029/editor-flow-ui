@@ -1,4 +1,53 @@
-import { createContext, useContext, useEffect, useMemo, useReducer } from 'react';
+import { createContext, useContext, useEffect, useMemo, useReducer, useState } from 'react';
+import { supabase } from '../config/supabaseclient';
+import {
+  loadBackendWorkspaceMeta,
+  createBackendWorkspace,
+  renameBackendWorkspace,
+  removeBackendWorkspace
+} from '../services/backendWorkspaceBridge';
+import {
+  getWorkspaceColumns,
+  createWorkspaceColumn,
+  updateWorkspaceColumn,
+  deleteWorkspaceColumn,
+  reorderWorkspaceColumns,
+  getWorkspaceTasks,
+  createWorkspaceTask,
+  updateWorkspaceTask,
+  deleteWorkspaceTask,
+  addWorkspaceTaskComment
+} from '../services/taskApi';
+import {
+  getWorkspaceFiles,
+  initFileUpload,
+  completeFileUpload,
+  deleteFile,
+  getFileVersions,
+  createFileVersion,
+  getFileRevisions,
+  createFileRevision,
+  updateFileRevision,
+  deleteFileRevision,
+  updateFilePermissions,
+  uploadFileWithProgress,
+  deleteWorkspaceFile,
+  updateWorkspaceFilePermissions,
+  addWorkspaceFileComment
+} from '../services/fileApi';
+import { getWorkspaceMembers, getMyProfile, updateMyProfile } from '../services/workspaceApi';
+import {
+  getWorkspaceChat,
+  sendWorkspaceChatMessage,
+  createWorkspaceChatTeam,
+  clearWorkspaceChat
+} from '../services/chatApi';
+import {
+  getWorkspaceNotifications,
+  createWorkspaceNotification,
+  markWorkspaceNotificationRead,
+  clearWorkspaceNotifications
+} from '../services/notificationApi';
 import {
   loadMeta,
   saveMeta,
@@ -17,7 +66,7 @@ import {
   MIN_SIDEBAR_W,
   MAX_SIDEBAR_W,
 } from '../utils/constants';
-import { clamp, extractMentions, uid } from '../utils/helpers';
+import { clamp, extractMentions, uid, uuidv4 } from '../utils/helpers';
 import { setObjectUrl, revokeObjectUrl } from '../utils/fileStore';
 
 const AppContext = createContext(null);
@@ -58,6 +107,11 @@ export function AppProvider({ children, session }) {
       status: 'active'
     };
   }
+
+    const [backendWorkspaces, setBackendWorkspaces] = useState([]);
+    const [backendWorkspaceLoading, setBackendWorkspaceLoading] = useState(false);
+    const [backendWorkspaceError, setBackendWorkspaceError] = useState(null);
+  
 
   const initialWorkspace = loadWorkspaceState(initialMeta.currentWorkspaceId);
   if (!initialWorkspace.ownerId && initialMeta.account) {
@@ -128,7 +182,23 @@ export function AppProvider({ children, session }) {
       }));
     };
 
-    const pushNotification = ({ icon, iconClass = 'mention-notif', title, sub, targetEditorId = null }) => {
+    const pushNotification = async ({ icon, iconClass = 'mention-notif', title, sub, targetEditorId = null }) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+
+      if (isBackend) {
+        try {
+          const payload = { icon, iconClass, title, sub, targetEditorId };
+          const notif = await createWorkspaceNotification(state.meta.currentWorkspaceId, payload);
+          updateWorkspace((current) => ({
+            ...current,
+            notifications: [notif, ...current.notifications],
+          }));
+        } catch (err) {
+          console.error('Failed to create backend notification:', err);
+        }
+        return;
+      }
+
       updateWorkspace((current) => ({
         ...current,
         notifications: [{ id: uid(), icon, iconClass, title, sub, targetEditorId, ts: Date.now(), read: false }, ...current.notifications],
@@ -180,7 +250,23 @@ export function AppProvider({ children, session }) {
       pushToast(`${editor?.name || 'Editor'} removed.`, 'error');
     };
 
-    const addTask = (payload) => {
+    const addTask = async (payload) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          const task = await createWorkspaceTask(state.meta.currentWorkspaceId, payload);
+          updateWorkspace((current) => {
+            const tasks = current.tasks || [];
+            if (tasks.some(t => t.id === task.id)) return current;
+            return { ...current, tasks: [...tasks, task] };
+          });
+          pushToast(`Task "${task.title}" added.`);
+        } catch (err) {
+          pushToast(err.message || 'Failed to add task', 'error');
+        }
+        return;
+      }
+
       const task = { id: uid(), createdAt: Date.now(), comments: [], ...payload };
       updateWorkspace((current) => ({ ...current, tasks: [...current.tasks, task] }));
       if (task.assigneeId) {
@@ -198,7 +284,21 @@ export function AppProvider({ children, session }) {
       pushToast(`Task "${task.title}" added.`);
     };
 
-    const updateTask = (taskId, updates) => {
+    const updateTask = async (taskId, updates) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          const updatedTask = await updateWorkspaceTask(state.meta.currentWorkspaceId, taskId, updates);
+          updateWorkspace((current) => ({
+            ...current,
+            tasks: current.tasks.map((task) => (task.id === taskId ? { ...task, ...updatedTask } : task)),
+          }));
+        } catch (err) {
+          pushToast(err.message || 'Failed to update task', 'error');
+        }
+        return;
+      }
+
       const currentTask = state.workspace.tasks.find((task) => task.id === taskId);
       updateWorkspace((current) => ({
         ...current,
@@ -218,12 +318,47 @@ export function AppProvider({ children, session }) {
       }
     };
 
-    const deleteTaskById = (taskId) => {
+    const deleteTaskById = async (taskId) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          await deleteWorkspaceTask(state.meta.currentWorkspaceId, taskId);
+          updateWorkspace((current) => ({ ...current, tasks: current.tasks.filter((task) => task.id !== taskId) }));
+          pushToast('Task deleted.', 'error');
+        } catch (err) {
+          pushToast(err.message || 'Failed to delete task', 'error');
+        }
+        return;
+      }
+
       updateWorkspace((current) => ({ ...current, tasks: current.tasks.filter((task) => task.id !== taskId) }));
       pushToast('Task deleted.', 'error');
     };
 
-    const addTaskComment = (taskId, text, senderId) => {
+    const addTaskComment = async (taskId, text, senderId) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          const comment = await addWorkspaceTaskComment(state.meta.currentWorkspaceId, taskId, text);
+          updateWorkspace((current) => ({
+            ...current,
+            tasks: (current.tasks || []).map((task) => {
+              if (task.id !== taskId) return task;
+              const comments = task.comments || [];
+              if (comments.some((c) => c.id === comment.id)) return task;
+              return {
+                ...task,
+                comments: [...comments, comment]
+              };
+            }),
+          }));
+          pushToast('Comment added.');
+        } catch (err) {
+          pushToast(err.message || 'Failed to add comment', 'error');
+        }
+        return;
+      }
+
       const authorName = getActorName(senderId);
       updateWorkspace((current) => ({
         ...current,
@@ -241,7 +376,25 @@ export function AppProvider({ children, session }) {
       pushToast('Comment added.');
     };
 
-    const addColumn = (payload) => {
+    const addColumn = async (payload) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          const key = `col_${uid()}`;
+          const column = await createWorkspaceColumn(state.meta.currentWorkspaceId, { key, ...payload });
+          updateWorkspace((current) => {
+            const columns = current.columns || [];
+            if (columns.some((c) => c.id === column.id)) return current;
+            return { ...current, columns: [...columns, column] };
+          });
+          pushToast('Column added.');
+          return column.key;
+        } catch (err) {
+          pushToast(err.message || 'Failed to add status column', 'error');
+          return null;
+        }
+      }
+
       const key = `col_${uid()}`;
       updateWorkspace((current) => ({
         ...current,
@@ -251,7 +404,24 @@ export function AppProvider({ children, session }) {
       return key;
     };
 
-    const updateColumn = (columnKey, updates) => {
+    const updateColumn = async (columnKey, updates) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          const col = state.workspace.columns.find((c) => c.key === columnKey);
+          if (!col) return;
+          const updatedCol = await updateWorkspaceColumn(state.meta.currentWorkspaceId, col.id, updates);
+          updateWorkspace((current) => ({
+            ...current,
+            columns: current.columns.map((column) => (column.key === columnKey ? { ...column, ...updatedCol } : column)),
+          }));
+          pushToast('Column updated.');
+        } catch (err) {
+          pushToast(err.message || 'Failed to update column', 'error');
+        }
+        return;
+      }
+
       updateWorkspace((current) => ({
         ...current,
         columns: current.columns.map((column) => (column.key === columnKey ? { ...column, ...updates } : column)),
@@ -259,7 +429,32 @@ export function AppProvider({ children, session }) {
       pushToast('Column updated.');
     };
 
-    const deleteColumnByKey = (columnKey) => {
+    const deleteColumnByKey = async (columnKey) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          const col = state.workspace.columns.find((c) => c.key === columnKey);
+          if (!col) return;
+          await deleteWorkspaceColumn(state.meta.currentWorkspaceId, col.id);
+          
+          const refreshedCols = await getWorkspaceColumns(state.meta.currentWorkspaceId);
+          const refreshedTasks = await getWorkspaceTasks(state.meta.currentWorkspaceId);
+          
+          dispatch({
+            type: 'UPDATE_WORKSPACE',
+            updater: (current) => ({
+              ...current,
+              columns: refreshedCols || [],
+              tasks: refreshedTasks || []
+            })
+          });
+          pushToast('Column deleted.');
+        } catch (err) {
+          pushToast(err.message || 'Failed to delete column', 'error');
+        }
+        return;
+      }
+
       updateWorkspace((current) => {
         const fallback = current.columns.find((column) => column.key !== columnKey);
         if (!fallback) return current;
@@ -272,7 +467,38 @@ export function AppProvider({ children, session }) {
       pushToast('Column deleted.');
     };
 
-    const moveColumn = (sourceKey, targetIndex) => {
+    const moveColumn = async (sourceKey, targetIndex) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          updateWorkspace((current) => {
+            const list = [...current.columns];
+            const sourceIndex = list.findIndex((column) => column.key === sourceKey);
+            if (sourceIndex < 0) return current;
+            const [removed] = list.splice(sourceIndex, 1);
+            list.splice(targetIndex, 0, removed);
+            return { ...current, columns: list };
+          });
+
+          const reorderedCols = [...state.workspace.columns];
+          const sourceIndex = reorderedCols.findIndex((c) => c.key === sourceKey);
+          if (sourceIndex >= 0) {
+            const [removed] = reorderedCols.splice(sourceIndex, 1);
+            reorderedCols.splice(targetIndex, 0, removed);
+          }
+          const keys = reorderedCols.map(c => c.key);
+          await reorderWorkspaceColumns(state.meta.currentWorkspaceId, keys);
+        } catch (err) {
+          pushToast(err.message || 'Failed to reorder columns', 'error');
+          const refreshed = await getWorkspaceColumns(state.meta.currentWorkspaceId);
+          dispatch({
+            type: 'UPDATE_WORKSPACE',
+            updater: (current) => ({ ...current, columns: refreshed || [] })
+          });
+        }
+        return;
+      }
+
       updateWorkspace((current) => {
         const list = [...current.columns];
         const sourceIndex = list.findIndex((column) => column.key === sourceKey);
@@ -283,7 +509,42 @@ export function AppProvider({ children, session }) {
       });
     };
 
-    const moveTask = (taskId, targetStatus, targetIndex = null) => {
+    const moveTask = async (taskId, targetStatus, targetIndex = null) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          updateWorkspace((current) => {
+            const moving = current.tasks.find((task) => task.id === taskId);
+            if (!moving) return current;
+            const remaining = current.tasks.filter((task) => task.id !== taskId);
+            const moved = { ...moving, status: targetStatus, position: targetIndex || 0 };
+            const next = [...remaining];
+            if (targetIndex == null) {
+              next.push(moved);
+            } else {
+              next.splice(targetIndex, 0, moved);
+            }
+            return {
+              ...current,
+              tasks: next.map((t, idx) => ({ ...t, position: idx }))
+            };
+          });
+
+          await updateWorkspaceTask(state.meta.currentWorkspaceId, taskId, {
+            status: targetStatus,
+            position: targetIndex || 0
+          });
+        } catch (err) {
+          pushToast(err.message || 'Failed to move task', 'error');
+          const refreshed = await getWorkspaceTasks(state.meta.currentWorkspaceId);
+          dispatch({
+            type: 'UPDATE_WORKSPACE',
+            updater: (current) => ({ ...current, tasks: refreshed || [] })
+          });
+        }
+        return;
+      }
+
       updateWorkspace((current) => {
         const moving = current.tasks.find((task) => task.id === taskId);
         if (!moving) return current;
@@ -311,8 +572,46 @@ export function AppProvider({ children, session }) {
       });
     };
 
-    const sendMessage = ({ text, senderId }) => {
+    const sendMessage = async ({ text, senderId }) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
       const senderName = getActorName(senderId);
+
+      if (isBackend) {
+        try {
+          const payload = {
+            text,
+            channel: state.workspace.activeChannel,
+            convType: state.workspace.activeConv.type,
+            recipientId: state.workspace.activeConv.type === 'dm' ? state.workspace.activeConv.id : null,
+            teamId: state.workspace.activeConv.type === 'team' ? state.workspace.activeConv.id : null
+          };
+          const message = await sendWorkspaceChatMessage(state.meta.currentWorkspaceId, payload);
+          
+          updateWorkspace((current) => {
+            const nextChat = structuredClone(current.chat);
+            if (current.activeConv.type === 'dm') {
+              nextChat.dm[current.activeConv.id] = nextChat.dm[current.activeConv.id] || EMPTY_CHAT_BUCKET();
+              nextChat.dm[current.activeConv.id][current.activeChannel].push(message);
+            } else if (current.activeConv.type === 'team') {
+              nextChat.teams[current.activeConv.id] = nextChat.teams[current.activeConv.id] || { name: 'Team', memberIds: [], ...EMPTY_CHAT_BUCKET() };
+              nextChat.teams[current.activeConv.id][current.activeChannel].push(message);
+            } else {
+              nextChat.global[current.activeChannel].push(message);
+            }
+            return { ...current, chat: nextChat };
+          });
+          
+          addMentionNotifications(text, senderName, {
+            icon: '💬',
+            iconClass: 'mention-notif',
+            getSubtext: (value) => `${value.slice(0, 80)}${value.length > 80 ? '…' : ''}`,
+          });
+        } catch (err) {
+          pushToast(err.message || 'Failed to send message', 'error');
+        }
+        return;
+      }
+
       updateWorkspace((current) => {
         const nextChat = structuredClone(current.chat);
         const message = { id: uid(), senderId, senderName, text, ts: Date.now() };
@@ -320,6 +619,7 @@ export function AppProvider({ children, session }) {
           nextChat.dm[current.activeConv.id] = nextChat.dm[current.activeConv.id] || EMPTY_CHAT_BUCKET();
           nextChat.dm[current.activeConv.id][current.activeChannel].push(message);
         } else if (current.activeConv.type === 'team') {
+          nextChat.teams[current.activeConv.id] = nextChat.teams[current.activeConv.id] || { name: 'Team', memberIds: [], ...EMPTY_CHAT_BUCKET() };
           nextChat.teams[current.activeConv.id][current.activeChannel].push(message);
         } else {
           nextChat.global[current.activeChannel].push(message);
@@ -333,7 +633,25 @@ export function AppProvider({ children, session }) {
       });
     };
 
-    const createTeam = (name, memberIds) => {
+    const createTeam = async (name, memberIds) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+
+      if (isBackend) {
+        try {
+          const team = await createWorkspaceChatTeam(state.meta.currentWorkspaceId, { name, memberIds });
+          updateWorkspace((current) => ({
+            ...current,
+            chat: { ...current.chat, teams: { ...current.chat.teams, [team.id]: team } },
+            activeConv: { type: 'team', id: team.id },
+            activeChannel: 'general',
+          }));
+          pushToast(`Team "${name}" created.`);
+        } catch (err) {
+          pushToast(err.message || 'Failed to create team', 'error');
+        }
+        return;
+      }
+
       const teamId = uid();
       updateWorkspace((current) => ({
         ...current,
@@ -344,7 +662,31 @@ export function AppProvider({ children, session }) {
       pushToast(`Team "${name}" created.`);
     };
 
-    const clearActiveChat = () => {
+    const clearActiveChat = async () => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+
+      if (isBackend) {
+        try {
+          const payload = {
+            convType: state.workspace.activeConv.type,
+            targetId: state.workspace.activeConv.type !== 'global' ? state.workspace.activeConv.id : null
+          };
+          await clearWorkspaceChat(state.meta.currentWorkspaceId, payload);
+          
+          updateWorkspace((current) => {
+            const nextChat = structuredClone(current.chat);
+            if (current.activeConv.type === 'dm') nextChat.dm[current.activeConv.id] = EMPTY_CHAT_BUCKET();
+            else if (current.activeConv.type === 'team') nextChat.teams[current.activeConv.id] = { ...nextChat.teams[current.activeConv.id], ...EMPTY_CHAT_BUCKET() };
+            else nextChat.global = EMPTY_CHAT_BUCKET();
+            return { ...current, chat: nextChat };
+          });
+          pushToast('Chat cleared.', 'error');
+        } catch (err) {
+          pushToast(err.message || 'Failed to clear chat', 'error');
+        }
+        return;
+      }
+
       updateWorkspace((current) => {
         const nextChat = structuredClone(current.chat);
         if (current.activeConv.type === 'dm') nextChat.dm[current.activeConv.id] = EMPTY_CHAT_BUCKET();
@@ -355,7 +697,8 @@ export function AppProvider({ children, session }) {
       pushToast('Chat cleared.', 'error');
     };
 
-    const addFiles = async (fileList, uploaderId) => {
+    const addFiles = async (fileList, uploaderId, onProgress) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
       // Images ≤ 2 MB: compress to base64 so they persist across page refreshes.
       // Everything else (videos, audio, large images, any format): use a zero-copy
       // Object URL — the browser streams directly from disk, so there is NO size
@@ -365,7 +708,7 @@ export function AppProvider({ children, session }) {
       const compressImage = (file) => new Promise((resolve) => {
         const reader = new FileReader();
         reader.onload = (e) => {
-          const raw = e.target?.result;
+          const raw = e.target && e.target.result;
           const img = new Image();
           img.onload = () => {
             const MAX_DIM = 1920;
@@ -387,9 +730,71 @@ export function AppProvider({ children, session }) {
         reader.readAsDataURL(file);
       });
 
-      const files = await Promise.all([...fileList].map(async (file) => {
-        const fileId = uid();
-        const useBase64 = file.type.startsWith('image/') && file.size <= IMAGE_PERSIST_LIMIT;
+      if (isBackend) {
+        try {
+          const workspaceId = state.meta.currentWorkspaceId;
+          for (let i = 0; i < fileList.length; i++) {
+            const file = fileList[i];
+            
+            // Extract duration offline if video/audio
+            let durationSeconds = null;
+            if (file.type && (file.type.startsWith('video/') || file.type.startsWith('audio/'))) {
+              durationSeconds = await new Promise((resolve) => {
+                const element = document.createElement(file.type.startsWith('video/') ? 'video' : 'audio');
+                element.src = URL.createObjectURL(file);
+                element.preload = 'metadata';
+                element.onloadedmetadata = () => {
+                  resolve(element.duration || null);
+                  URL.revokeObjectURL(element.src);
+                };
+                element.onerror = () => {
+                  resolve(null);
+                  URL.revokeObjectURL(element.src);
+                };
+              });
+            }
+
+            // 1. Initialize upload with backend
+            const initData = await initFileUpload(workspaceId, {
+              name: file.name,
+              size_bytes: file.size,
+              mime_type: file.type || 'application/octet-stream'
+            });
+
+            // 2. Direct upload to Supabase Storage via pre-signed URL with progress
+            await uploadFileWithProgress(initData.signedUrl, initData.token, file, (percent) => {
+              if (onProgress) {
+                const overallPercent = Math.round(((i * 100) + percent) / fileList.length);
+                onProgress(overallPercent);
+              }
+            });
+
+            // 3. Complete upload on backend
+            await completeFileUpload(workspaceId, {
+              fileId: initData.file.id,
+              versionId: initData.version.id,
+              durationSeconds
+            });
+          }
+
+          // Refresh files in state
+          const refreshedFiles = await getWorkspaceFiles(workspaceId);
+          updateWorkspace((current) => ({
+            ...current,
+            files: refreshedFiles || []
+          }));
+
+          pushToast(fileList.length + ' file(s) uploaded successfully.');
+        } catch (err) {
+          pushToast(err.message || 'Upload failed', 'error');
+          throw err;
+        }
+        return;
+      }
+
+      const filesData = await Promise.all([...fileList].map(async (file) => {
+        const fileId = uuidv4();
+        const useBase64 = file.type && file.type.startsWith('image/') && file.size <= IMAGE_PERSIST_LIMIT;
         let dataUrl = null;
 
         if (useBase64) {
@@ -406,18 +811,57 @@ export function AppProvider({ children, session }) {
           type: file.type || 'application/octet-stream',
           size: file.size,
           dataUrl, // null for large/non-image files (they use Object URL instead)
-          uploadedBy: uploaderId,
-          uploadedAt: Date.now(),
-          comments: [],
           visibleTo: [],
         };
       }));
 
-      updateWorkspace((current) => ({ ...current, files: [...current.files, ...files] }));
-      pushToast(`${files.length} file(s) uploaded.`);
+      const localFiles = filesData.map(f => ({
+        ...f,
+        uploadedBy: uploaderId,
+        uploadedAt: Date.now(),
+        comments: [],
+      }));
+
+      updateWorkspace((current) => ({ ...current, files: [...current.files, ...localFiles] }));
+      pushToast(`${localFiles.length} file(s) uploaded.`);
     };
 
-    const addFileComment = (fileId, text, senderId, timestamp = null) => {
+    const addFileComment = async (fileId, text, senderId, timestamp = null, fileVersionId = null) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          const workspaceId = state.meta.currentWorkspaceId;
+          let targetVersionId = fileVersionId;
+          if (!targetVersionId) {
+            const fileObj = state.workspace.files.find(f => f.id === fileId);
+            const latestVersion = fileObj && fileObj.versions && fileObj.versions[fileObj.versions.length - 1];
+            targetVersionId = latestVersion && latestVersion.id;
+          }
+
+          if (!targetVersionId) {
+            throw new Error('No ready version found for comment');
+          }
+
+          const comment = await createFileRevision(workspaceId, fileId, {
+            fileVersionId: targetVersionId,
+            timestampSeconds: timestamp !== null ? Number(timestamp) : 0,
+            body: text
+          });
+
+          updateWorkspace((current) => ({
+            ...current,
+            files: current.files.map((file) => file.id === fileId ? {
+              ...file,
+              comments: [...file.comments, comment]
+            } : file)
+          }));
+          pushToast('Feedback added.');
+        } catch (err) {
+          pushToast(err.message || 'Failed to add comment', 'error');
+        }
+        return;
+      }
+
       const authorName = getActorName(senderId);
       updateWorkspace((current) => ({
         ...current,
@@ -430,18 +874,45 @@ export function AppProvider({ children, session }) {
       addMentionNotifications(text, authorName, {
         icon: '🎥',
         iconClass: 'file-notif',
-        getSubtext: (value) => `On "${file?.name || 'file'}"${timestamp != null ? ` at ${Math.floor(timestamp)}s` : ''}: ${value.slice(0, 60)}${value.length > 60 ? '…' : ''}`,
+        getSubtext: (value) => `On "${file && file.name ? file.name : 'file'}"${timestamp != null ? ` at ${Math.floor(timestamp)}s` : ''}: ${value.slice(0, 60)}${value.length > 60 ? '…' : ''}`,
       });
       pushToast('Feedback added.');
     };
 
-    const deleteFileById = (fileId) => {
+    const deleteFileById = async (fileId) => {
       revokeObjectUrl(fileId); // free browser memory for Object URL files
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          await deleteFile(state.meta.currentWorkspaceId, fileId);
+          updateWorkspace((current) => ({ ...current, files: current.files.filter((file) => file.id !== fileId) }));
+          pushToast('File deleted.', 'error');
+        } catch (err) {
+          pushToast(err.message || 'Failed to delete file', 'error');
+        }
+        return;
+      }
+
       updateWorkspace((current) => ({ ...current, files: current.files.filter((file) => file.id !== fileId) }));
       pushToast('File deleted.', 'error');
     };
 
-    const updateFilePermissions = (fileId, visibleTo) => {
+    const updateFilePermissions = async (fileId, visibleTo) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          const updatedVisibleTo = await updateFilePermissions(state.meta.currentWorkspaceId, fileId, visibleTo);
+          updateWorkspace((current) => ({
+            ...current,
+            files: current.files.map((file) => (file.id === fileId ? { ...file, visibleTo: updatedVisibleTo } : file))
+          }));
+          pushToast('File access updated.');
+        } catch (err) {
+          pushToast(err.message || 'Failed to update access permissions', 'error');
+        }
+        return;
+      }
+
       updateWorkspace((current) => ({
         ...current,
         files: current.files.map((file) => (file.id === fileId ? { ...file, visibleTo } : file)),
@@ -449,16 +920,191 @@ export function AppProvider({ children, session }) {
       pushToast('File access updated.');
     };
 
-    const markNotificationRead = (notificationId) => {
+    const resolveFileRevision = async (fileId, revisionId, isResolved) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          const workspaceId = state.meta.currentWorkspaceId;
+          const updatedComment = await updateFileRevision(workspaceId, fileId, revisionId, {
+            status: isResolved ? 'resolved' : 'open'
+          });
+          
+          updateWorkspace((current) => ({
+            ...current,
+            files: current.files.map((file) => file.id === fileId ? {
+              ...file,
+              comments: file.comments.map((c) => c.id === revisionId ? { ...c, ...updatedComment } : c)
+            } : file)
+          }));
+          
+          pushToast(isResolved ? 'Revision resolved.' : 'Revision re-opened.');
+        } catch (err) {
+          pushToast(err.message || 'Failed to update revision', 'error');
+        }
+      }
+    };
+
+    const deleteFileRevisionById = async (fileId, revisionId) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          const workspaceId = state.meta.currentWorkspaceId;
+          await deleteFileRevision(workspaceId, fileId, revisionId);
+          
+          updateWorkspace((current) => ({
+            ...current,
+            files: current.files.map((file) => file.id === fileId ? {
+              ...file,
+              comments: file.comments.filter((c) => c.id !== revisionId)
+            } : file)
+          }));
+          
+          pushToast('Revision deleted.', 'error');
+        } catch (err) {
+          pushToast(err.message || 'Failed to delete revision', 'error');
+        }
+      }
+    };
+
+    const uploadNewVersion = async (fileId, file, onProgress) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+      if (isBackend) {
+        try {
+          const workspaceId = state.meta.currentWorkspaceId;
+          
+          // Extract duration offline if video/audio
+          let durationSeconds = null;
+          if (file.type && (file.type.startsWith('video/') || file.type.startsWith('audio/'))) {
+            durationSeconds = await new Promise((resolve) => {
+              const element = document.createElement(file.type.startsWith('video/') ? 'video' : 'audio');
+              element.src = URL.createObjectURL(file);
+              element.preload = 'metadata';
+              element.onloadedmetadata = () => {
+                resolve(element.duration || null);
+                URL.revokeObjectURL(element.src);
+              };
+              element.onerror = () => {
+                resolve(null);
+                URL.revokeObjectURL(element.src);
+              };
+            });
+          }
+
+          // 1. Initialize version upload
+          const initData = await createFileVersion(workspaceId, fileId, {
+            name: file.name,
+            size_bytes: file.size,
+            mime_type: file.type || 'application/octet-stream'
+          });
+
+          // 2. Direct upload to storage
+          await uploadFileWithProgress(initData.signedUrl, initData.token, file, onProgress);
+
+          // 3. Complete version upload
+          await completeFileUpload(workspaceId, {
+            fileId: fileId,
+            versionId: initData.version.id,
+            durationSeconds
+          });
+
+          // Refresh files list
+          const refreshedFiles = await getWorkspaceFiles(workspaceId);
+          updateWorkspace((current) => ({
+            ...current,
+            files: refreshedFiles || []
+          }));
+
+          pushToast('New version V' + initData.version.version_number + ' uploaded.');
+        } catch (err) {
+          pushToast(err.message || 'Failed to upload new version', 'error');
+          throw err;
+        }
+      }
+    };
+
+    const markNotificationRead = async (notificationId) => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+
+      if (isBackend) {
+        try {
+          await markWorkspaceNotificationRead(state.meta.currentWorkspaceId, notificationId);
+        } catch (err) {
+          console.error('Failed to mark notification read:', err);
+        }
+      }
+
       updateWorkspace((current) => ({
         ...current,
         notifications: current.notifications.map((item) => item.id === notificationId ? { ...item, read: true } : item),
       }));
     };
 
-    const clearNotifications = () => updateWorkspace((current) => ({ ...current, notifications: [] }));
+    const clearNotifications = async () => {
+      const isBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
 
-    const saveAccount = (payload) => {
+      if (isBackend) {
+        try {
+          await clearWorkspaceNotifications(state.meta.currentWorkspaceId);
+        } catch (err) {
+          console.error('Failed to clear notifications:', err);
+        }
+      }
+
+      updateWorkspace((current) => ({ ...current, notifications: [] }));
+    };
+
+    const refreshProfile = async () => {
+      if (!session) return;
+      try {
+        const data = await getMyProfile();
+        if (data && data.profile) {
+          const profile = data.profile;
+          updateMeta((current) => ({
+            ...current,
+            account: {
+              ...current.account,
+              id: profile.id,
+              name: profile.full_name || (session && session.user && session.user.email ? session.user.email.split('@')[0] : 'Admin'),
+              email: profile.email,
+              color: profile.color || '#8b5cf6',
+              role: profile.role || 'Workspace Admin',
+              bio: profile.bio || '',
+              avatarUrl: profile.avatar_url || null,
+              status: profile.status || 'active',
+              plan: data.plan || null,
+              storageUsedBytes: data.storageUsedBytes || 0,
+              storageLimitBytes: data.storageLimitBytes || 2147483648,
+              storagePercent: data.storagePercent || 0
+            }
+          }));
+        }
+      } catch (err) {
+        console.error('Failed to refresh profile:', err);
+      }
+    };
+
+    const saveAccount = async (payload) => {
+      const isBackend = !!session;
+
+      if (isBackend) {
+        try {
+          await updateMyProfile({
+            name: payload.name,
+            color: payload.color,
+            role: payload.role,
+            bio: payload.bio,
+            status: payload.status,
+            avatarUrl: payload.avatarUrl
+          });
+
+          await refreshProfile();
+          pushToast('Profile updated.');
+        } catch (err) {
+          pushToast(err.message || 'Failed to update profile', 'error');
+        }
+        return;
+      }
+
       updateMeta((current) => ({ ...current, account: { ...DEFAULT_ACCOUNT, ...current.account, ...payload } }));
       pushToast('Profile updated.');
     };
@@ -508,15 +1154,49 @@ export function AppProvider({ children, session }) {
       pushToast(`Joined workspace successfully.`);
     };
 
-    const switchWorkspace = (workspaceId) => {
-      const target = state.meta.workspaces.find((workspace) => workspace.id === workspaceId);
-      if (!target) return;
-      dispatch({ type: 'REPLACE_META', meta: { ...state.meta, currentWorkspaceId: workspaceId } });
-      dispatch({ type: 'REPLACE_WORKSPACE', workspace: loadWorkspaceState(workspaceId) });
-      pushToast(`Switched to "${target.name}".`);
-    };
 
-    const renameWorkspace = (workspaceId, name) => {
+    const switchWorkspace = (workspaceId) => {
+  const localWorkspaces = state.meta.workspaces || [];
+  const backendList = backendWorkspaces || [];
+
+  const target =
+    localWorkspaces.find((workspace) => workspace.id === workspaceId) ||
+    backendList.find((workspace) => workspace.id === workspaceId);
+
+  if (!target) return;
+
+  const alreadyExistsLocally = localWorkspaces.some(
+    (workspace) => workspace.id === workspaceId
+  );
+
+  const nextMeta = {
+    ...state.meta,
+    currentWorkspaceId: workspaceId,
+    workspaces: alreadyExistsLocally
+      ? localWorkspaces
+      : [
+          ...localWorkspaces,
+          {
+            id: target.id,
+            name: target.name,
+            createdAt: Date.now()
+          }
+        ]
+  };
+
+  const nextWorkspace = loadWorkspaceState(workspaceId);
+
+  if (!nextWorkspace.ownerId && state.meta.account) {
+    nextWorkspace.ownerId = state.meta.account.id;
+    saveWorkspaceState(workspaceId, nextWorkspace);
+  }
+
+  dispatch({ type: 'REPLACE_META', meta: nextMeta });
+  dispatch({ type: 'REPLACE_WORKSPACE', workspace: nextWorkspace });
+
+  pushToast(`Switched to "${target.name}".`);
+};
+      const renameWorkspace = (workspaceId, name) => {
       updateMeta((current) => ({
         ...current,
         workspaces: current.workspaces.map((workspace) => workspace.id === workspaceId ? { ...workspace, name } : workspace),
@@ -576,9 +1256,13 @@ export function AppProvider({ children, session }) {
       addFileComment,
       deleteFileById,
       updateFilePermissions,
+      resolveFileRevision,
+      deleteFileRevisionById,
+      uploadNewVersion,
       markNotificationRead,
       clearNotifications,
       saveAccount,
+      refreshProfile,
       createWorkspace,
       switchWorkspace,
       joinWorkspaceById,
@@ -588,9 +1272,321 @@ export function AppProvider({ children, session }) {
       setPanelWidth,
       createColumnDraft,
     };
-  }, [state]);
+  },  [state, backendWorkspaces]);
 
-  const value = useMemo(() => ({ ...state, ...helpers }), [state, helpers]);
+  const fetchWorkspaceTasksAndFiles = async (workspaceId) => {
+    try {
+      const [columns, tasks, files] = await Promise.all([
+        getWorkspaceColumns(workspaceId),
+        getWorkspaceTasks(workspaceId),
+        getWorkspaceFiles(workspaceId)
+      ]);
+      dispatch({
+        type: 'UPDATE_WORKSPACE',
+        updater: (current) => ({
+          ...current,
+          columns: columns || [],
+          tasks: tasks || [],
+          files: files || []
+        })
+      });
+    } catch (err) {
+      console.error('Failed to refetch tasks and files:', err);
+    }
+  };
+
+  const fetchWorkspaceChatMessages = async (workspaceId) => {
+    try {
+      const chatData = await getWorkspaceChat(workspaceId);
+      dispatch({
+        type: 'UPDATE_WORKSPACE',
+        updater: (current) => ({
+          ...current,
+          chat: chatData?.chat || { global: { general: [], links: [], feedback: [] }, dm: {}, teams: {} }
+        })
+      });
+    } catch (err) {
+      console.error('Failed to refetch chat messages:', err);
+    }
+  };
+
+  const fetchWorkspaceNotificationsData = async (workspaceId) => {
+    try {
+      const notifications = await getWorkspaceNotifications(workspaceId);
+      dispatch({
+        type: 'UPDATE_WORKSPACE',
+        updater: (current) => ({
+          ...current,
+          notifications: notifications || []
+        })
+      });
+    } catch (err) {
+      console.error('Failed to refetch notifications:', err);
+    }
+  };
+
+  async function refreshBackendWorkspaces() {
+  setBackendWorkspaceLoading(true);
+  setBackendWorkspaceError(null);
+
+  try {
+    const workspaces = await loadBackendWorkspaceMeta();
+    setBackendWorkspaces(workspaces);
+    return workspaces;
+  } catch (error) {
+    const message = error.message || 'Failed to load workspaces';
+    setBackendWorkspaceError(message);
+    throw error;
+  } finally {
+    setBackendWorkspaceLoading(false);
+  }
+}
+
+async function addBackendWorkspace(name) {
+  const workspace = await createBackendWorkspace(name);
+  await refreshBackendWorkspaces();
+  if (workspace && workspace.id) {
+    helpers.switchWorkspace(workspace.id);
+  }
+  return workspace;
+}
+
+async function editBackendWorkspace(workspaceId, name) {
+  const workspace = await renameBackendWorkspace(workspaceId, name);
+  await refreshBackendWorkspaces();
+  dispatch({
+    type: 'REPLACE_META',
+    meta: {
+      ...state.meta,
+      workspaces: state.meta.workspaces.map((ws) =>
+        ws.id === workspaceId ? { ...ws, name } : ws
+      )
+    }
+  });
+  return workspace;
+}
+
+async function deleteBackendWorkspaceById(workspaceId) {
+  if (backendWorkspaces.length <= 1) {
+    helpers.pushToast('Cannot delete the only remaining workspace.', 'error');
+    return false;
+  }
+
+  await removeBackendWorkspace(workspaceId);
+  const refreshed = await refreshBackendWorkspaces();
+
+  if (workspaceId === state.meta.currentWorkspaceId && refreshed && refreshed.length > 0) {
+    const nextWorkspace = refreshed.find(w => w.id !== workspaceId) || refreshed[0];
+    if (nextWorkspace) {
+      helpers.switchWorkspace(nextWorkspace.id);
+    }
+  }
+
+  helpers.pushToast('Workspace deleted.', 'error');
+  return true;
+}
+
+useEffect(() => {
+  const userId =
+    session && session.user && session.user.id ? session.user.id : null;
+
+  if (!userId) return;
+
+  // Load backend profile
+  getMyProfile().then((data) => {
+    if (data && data.profile) {
+      const profile = data.profile;
+      dispatch({
+        type: 'REPLACE_META',
+        meta: {
+          ...state.meta,
+          account: {
+            id: profile.id,
+            name: profile.full_name || session.user.email.split('@')[0],
+            email: profile.email,
+            color: profile.color || '#8b5cf6',
+            role: profile.role || 'Workspace Admin',
+            bio: profile.bio || '',
+            avatarUrl: profile.avatar_url || null,
+            status: profile.status || 'active',
+            plan: data.plan || null,
+            storageUsedBytes: data.storageUsedBytes || 0,
+            storageLimitBytes: data.storageLimitBytes || 2147483648,
+            storagePercent: data.storagePercent || 0
+          }
+        }
+      });
+    }
+  }).catch(err => {
+    console.error('Failed to load backend profile:', err);
+  });
+
+  refreshBackendWorkspaces().catch((error) => {
+    console.error('Failed to load backend workspaces:', error);
+  });
+}, [session && session.user && session.user.id]);
+
+useEffect(() => {
+  if (backendWorkspaces && backendWorkspaces.length > 0) {
+    const hasActiveBackend = backendWorkspaces.some((ws) => ws.id === state.meta.currentWorkspaceId);
+    if (!hasActiveBackend) {
+      helpers.switchWorkspace(backendWorkspaces[0].id);
+    }
+  }
+}, [backendWorkspaces, state.meta.currentWorkspaceId]);
+
+useEffect(() => {
+  if (state.meta.currentWorkspaceId && backendWorkspaces.length > 0) {
+    const activeId = state.meta.currentWorkspaceId;
+    const isBackend = backendWorkspaces.some((ws) => ws.id === activeId);
+    if (isBackend) {
+      let active = true;
+      Promise.all([
+        getWorkspaceColumns(activeId),
+        getWorkspaceTasks(activeId),
+        getWorkspaceFiles(activeId),
+        getWorkspaceMembers(activeId),
+        getWorkspaceChat(activeId),
+        getWorkspaceNotifications(activeId)
+      ]).then(([columns, tasks, files, members, chatData, notifications]) => {
+        if (!active) return;
+        const editors = (members || []).map(m => ({
+          id: m.user_id,
+          name: m.profile?.full_name || m.profile?.email?.split('@')[0] || 'Unknown',
+          email: m.profile?.email || '',
+          color: m.profile?.color || '#8b5cf6',
+          role: m.role,
+          status: m.status || 'active',
+          avatarUrl: m.profile?.avatar_url || null
+        }));
+
+        dispatch({
+          type: 'UPDATE_WORKSPACE',
+          updater: (current) => ({
+            ...current,
+            columns: columns || [],
+            tasks: tasks || [],
+            files: files || [],
+            editors: editors,
+            chat: chatData?.chat || { global: { general: [], links: [], feedback: [] }, dm: {}, teams: {} },
+            notifications: notifications || []
+          })
+        });
+      }).catch(err => {
+        if (!active) return;
+        console.error('Failed to sync tasks/columns/files/editors/chat/notifications with backend:', err);
+      });
+      return () => {
+        active = false;
+      };
+    }
+  }
+}, [state.meta.currentWorkspaceId, backendWorkspaces]);
+
+useEffect(() => {
+  if (state.meta.currentWorkspaceId && backendWorkspaces.length > 0) {
+    const activeId = state.meta.currentWorkspaceId;
+    const isBackend = backendWorkspaces.some((ws) => ws.id === activeId);
+    if (isBackend) {
+      console.log(`Setting up Supabase Realtime channel for workspace: ${activeId}`);
+      
+      const channel = supabase
+        .channel(`ws-realtime-${activeId}`)
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'task_columns',
+          filter: `workspace_id=eq.${activeId}`
+        }, () => {
+          fetchWorkspaceTasksAndFiles(activeId);
+        })
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'tasks',
+          filter: `workspace_id=eq.${activeId}`
+        }, () => {
+          fetchWorkspaceTasksAndFiles(activeId);
+        })
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'task_comments',
+          filter: `workspace_id=eq.${activeId}`
+        }, () => {
+          fetchWorkspaceTasksAndFiles(activeId);
+        })
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'files',
+          filter: `workspace_id=eq.${activeId}`
+        }, () => {
+          fetchWorkspaceTasksAndFiles(activeId);
+        })
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'file_versions',
+          filter: `workspace_id=eq.${activeId}`
+        }, () => {
+          fetchWorkspaceTasksAndFiles(activeId);
+        })
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'file_revisions',
+          filter: `workspace_id=eq.${activeId}`
+        }, () => {
+          fetchWorkspaceTasksAndFiles(activeId);
+        })
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'chat_messages',
+          filter: `workspace_id=eq.${activeId}`
+        }, () => {
+          fetchWorkspaceChatMessages(activeId);
+        })
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'workspace_notifications',
+          filter: `workspace_id=eq.${activeId}`
+        }, () => {
+          fetchWorkspaceNotificationsData(activeId);
+        })
+        .subscribe();
+
+      return () => {
+        console.log(`Removing Supabase Realtime channel for workspace: ${activeId}`);
+        supabase.removeChannel(channel);
+      };
+    }
+  }
+}, [state.meta.currentWorkspaceId, backendWorkspaces]);
+
+ const value = useMemo(
+  () => ({
+    ...state,
+    ...helpers,
+
+    backendWorkspaces,
+    backendWorkspaceLoading,
+    backendWorkspaceError,
+    refreshBackendWorkspaces,
+    addBackendWorkspace,
+    editBackendWorkspace,
+    deleteBackendWorkspaceById
+  }),
+  [
+    state,
+    helpers,
+    backendWorkspaces,
+    backendWorkspaceLoading,
+    backendWorkspaceError
+  ]
+);
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
 

@@ -2,18 +2,16 @@ import { useEffect, useMemo, useState } from 'react';
 import Modal from '../common/Modal';
 import { useAppContext } from '../../context/AppContext';
 import { formatTime, renderMentions } from '../../utils/helpers';
-import { uid } from '../../utils/helpers';
-import { COLUMN_COLORS } from '../../utils/constants';
 
 export default function TaskDetailModal({ task, isOpen, onClose }) {
-  const { workspace, updateTask, deleteTaskById, addTaskComment, updateWorkspace, pushToast } = useAppContext();
+  const { workspace, updateTask, deleteTaskById, addTaskComment } = useAppContext();
   const [form, setForm] = useState(task);
   const [comment, setComment] = useState('');
 
   useEffect(() => {
-    setForm(task ? { ...task, statusInput: workspace.columns.find((c) => c.key === task.status)?.label || task.status } : null);
+    setForm(task ? { ...task } : null);
     setComment('');
-  }, [task, workspace.columns]);
+  }, [task]);
 
   const freshTask = useMemo(
     () => workspace.tasks.find((item) => item.id === task?.id) || form,
@@ -23,79 +21,103 @@ export default function TaskDetailModal({ task, isOpen, onClose }) {
   if (!freshTask) return null;
 
   const save = () => {
-    const trimmedStatus = (form.statusInput || '').trim();
-    const matched = workspace.columns.find(
-      (col) => col.label.toLowerCase() === trimmedStatus.toLowerCase() || col.key === trimmedStatus,
-    );
-
-    if (matched) {
-      updateTask(freshTask.id, {
-        title: form.title.trim() || freshTask.title,
-        type: form.type,
-        status: matched.key,
-        assigneeId: form.assigneeId,
-        deadline: form.deadline,
-      });
-    } else {
-      // New column — create column and update task in ONE atomic dispatch
-      const colKey = `col_${uid()}`;
-      const randomColor = COLUMN_COLORS[Math.floor(Math.random() * COLUMN_COLORS.length)];
-      const newCol = { key: colKey, label: trimmedStatus || 'New Status', emoji: '📌', color: randomColor };
-      const updatedTitle = form.title.trim() || freshTask.title;
-      updateWorkspace((current) => ({
-        ...current,
-        columns: [...current.columns, newCol],
-        tasks: current.tasks.map((t) =>
-          t.id === freshTask.id
-            ? { ...t, title: updatedTitle, type: form.type, status: colKey, assigneeId: form.assigneeId, deadline: form.deadline }
-            : t
-        ),
-      }));
-      pushToast(`Column "${newCol.label}" created.`);
-    }
+    updateTask(freshTask.id, {
+      title: (form?.title || '').trim() || freshTask.title,
+      type: form?.type || 'video',
+      priority: form?.priority || 'medium',
+      status: form?.status || freshTask.status,
+      assigneeId: form?.assigneeId || '',
+      deadline: form?.deadline || '',
+    });
     onClose();
   };
 
   return (
     <Modal title={freshTask.title} isOpen={isOpen} onClose={onClose}>
       <div className="form-stack">
-        <input className="text-input" value={form?.title || ''} onChange={(event) => setForm({ ...form, title: event.target.value })} />
+        <div className="form-group">
+          <label className="form-label" htmlFor="task-detail-title">Task Title</label>
+          <input
+            id="task-detail-title"
+            className="text-input"
+            value={form?.title || ''}
+            onChange={(event) => setForm({ ...form, title: event.target.value })}
+          />
+        </div>
+
         <div className="two-column-grid">
-          <select value={form?.type || 'video'} onChange={(event) => setForm({ ...form, type: event.target.value })}>
-            <option value="video">🎬 Video</option>
-            <option value="photo">📷 Photo</option>
-            <option value="audio">🎵 Audio</option>
-            <option value="design">🎨 Design</option>
-            <option value="other">📄 Other</option>
-          </select>
-          {/* Dynamic status field */}
-          <div>
-            <input
-              id="task-detail-status"
-              className="text-input"
-              list="task-detail-status-list"
-              placeholder="Status…"
-              value={form?.statusInput || ''}
-              onChange={(event) => setForm({ ...form, statusInput: event.target.value })}
-            />
-            <datalist id="task-detail-status-list">
-              {workspace.columns.map((col) => (
-                <option key={col.key} value={col.label}>{col.emoji} {col.label}</option>
-              ))}
-            </datalist>
-            {(form?.statusInput || '').trim() &&
-              !workspace.columns.some((col) => col.label.toLowerCase() === (form?.statusInput || '').trim().toLowerCase()) && (
-                <small style={{ color: 'var(--accent)', marginTop: '4px', display: 'block' }}>
-                  ✨ New column will be created
-                </small>
-            )}
+          <div className="form-group">
+            <label className="form-label" htmlFor="task-detail-type">Category</label>
+            <select
+              id="task-detail-type"
+              value={form?.type || 'video'}
+              onChange={(event) => setForm({ ...form, type: event.target.value })}
+            >
+              <option value="video">🎬 Video</option>
+              <option value="photo">📷 Photo</option>
+              <option value="audio">🎵 Audio</option>
+              <option value="design">🎨 Design</option>
+              <option value="other">📄 Other</option>
+            </select>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="task-detail-priority">Priority</label>
+            <select
+              id="task-detail-priority"
+              value={form?.priority || 'medium'}
+              onChange={(event) => setForm({ ...form, priority: event.target.value })}
+            >
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
           </div>
         </div>
-        <select value={form?.assigneeId || ''} onChange={(event) => setForm({ ...form, assigneeId: event.target.value })}>
-          <option value="">Unassigned</option>
-          {workspace.editors.map((editor) => <option key={editor.id} value={editor.id}>{editor.name}</option>)}
-        </select>
-        <input className="text-input" type="date" value={form?.deadline || ''} onChange={(event) => setForm({ ...form, deadline: event.target.value })} />
+
+        <div className="two-column-grid">
+          <div className="form-group">
+            <label className="form-label" htmlFor="task-detail-status">Status</label>
+            <select
+              id="task-detail-status"
+              value={form?.status || ''}
+              onChange={(event) => setForm({ ...form, status: event.target.value })}
+            >
+              {workspace.columns.map((col) => (
+                <option key={col.key} value={col.key}>
+                  {col.emoji} {col.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="task-detail-assignee">Assignee</label>
+            <select
+              id="task-detail-assignee"
+              value={form?.assigneeId || ''}
+              onChange={(event) => setForm({ ...form, assigneeId: event.target.value })}
+            >
+              <option value="">Unassigned</option>
+              {workspace.editors.map((editor) => (
+                <option key={editor.id} value={editor.id}>
+                  {editor.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label" htmlFor="task-detail-deadline">Deadline</label>
+          <input
+            id="task-detail-deadline"
+            className="text-input"
+            type="date"
+            value={form?.deadline || ''}
+            onChange={(event) => setForm({ ...form, deadline: event.target.value })}
+          />
+        </div>
 
         <div className="comment-block">
           <div className="section-title">Comments</div>
@@ -110,12 +132,23 @@ export default function TaskDetailModal({ task, isOpen, onClose }) {
             ))}
           </div>
           <div className="compose-row">
-            <textarea className="text-input" rows={2} placeholder="Add a comment..." value={comment} onChange={(event) => setComment(event.target.value)} />
-            <button className="primary-button" onClick={() => {
-              if (!comment.trim()) return;
-              addTaskComment(freshTask.id, comment.trim(), workspace.senderId);
-              setComment('');
-            }}>➤</button>
+            <textarea
+              className="text-input"
+              rows={2}
+              placeholder="Add a comment..."
+              value={comment}
+              onChange={(event) => setComment(event.target.value)}
+            />
+            <button
+              className="primary-button"
+              onClick={() => {
+                if (!comment.trim()) return;
+                addTaskComment(freshTask.id, comment.trim(), workspace.senderId);
+                setComment('');
+              }}
+            >
+              ➤
+            </button>
           </div>
         </div>
 

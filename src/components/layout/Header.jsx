@@ -22,6 +22,8 @@ export default function Header({ onOpenEditorModal, onOpenTaskModal, onOpenWorks
     switchWorkspace,
     joinOrCreateWorkspace,
     deleteWorkspaceById,
+    backendWorkspaces,
+    deleteBackendWorkspaceById,
   } = useAppContext();
   const [showWorkspaceMenu, setShowWorkspaceMenu] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
@@ -31,9 +33,17 @@ export default function Header({ onOpenEditorModal, onOpenTaskModal, onOpenWorks
   useOutsideClick(workspaceRef, () => setShowWorkspaceMenu(false));
   useOutsideClick(notificationRef, () => setShowNotifications(false));
 
+  const visibleWorkspaces = useMemo(() => {
+    return backendWorkspaces && backendWorkspaces.length > 0
+      ? backendWorkspaces
+      : meta.workspaces || [];
+  }, [backendWorkspaces, meta.workspaces]);
+
+  const usingBackendWorkspaces = backendWorkspaces && backendWorkspaces.length > 0;
+
   const currentWorkspace = useMemo(
-    () => meta.workspaces.find((item) => item.id === meta.currentWorkspaceId),
-    [meta],
+    () => visibleWorkspaces.find((item) => item.id === meta.currentWorkspaceId),
+    [visibleWorkspaces, meta.currentWorkspaceId],
   );
 
   const completion = workspace.tasks.length
@@ -58,7 +68,7 @@ export default function Header({ onOpenEditorModal, onOpenTaskModal, onOpenWorks
         {showWorkspaceMenu && (
           <div className="floating-panel workspace-panel">
             <div className="panel-title">Workspaces</div>
-            {meta.workspaces.map((item) => (
+            {visibleWorkspaces.map((item) => (
               <button
                 className={`panel-row ${item.id === meta.currentWorkspaceId ? 'panel-row-active' : ''}`}
                 key={item.id}
@@ -80,8 +90,33 @@ export default function Header({ onOpenEditorModal, onOpenTaskModal, onOpenWorks
                   <button className="ghost-button small" onClick={() => { joinOrCreateWorkspace(joinName); setJoinName(''); setShowWorkspaceMenu(false); }}>Join</button>
                 </div>
                 <button className="panel-row" onClick={() => { onOpenWorkspaceModal('rename'); setShowWorkspaceMenu(false); }}>✏️ Rename Current</button>
-                {meta.workspaces.length > 1 && (
-                  <button className="panel-row panel-row-danger" onClick={() => { deleteWorkspaceById(meta.currentWorkspaceId); setShowWorkspaceMenu(false); }}>🗑 Delete Current</button>
+                
+                {usingBackendWorkspaces && backendWorkspaces.length > 1 && (
+                  <button
+                    className="panel-row panel-row-danger"
+                    onClick={() => {
+                      if (window.confirm(`Are you sure you want to delete "${currentWorkspace?.name}"?`)) {
+                        deleteBackendWorkspaceById(meta.currentWorkspaceId);
+                        setShowWorkspaceMenu(false);
+                      }
+                    }}
+                  >
+                    🗑 Delete Current
+                  </button>
+                )}
+
+                {!usingBackendWorkspaces && meta.workspaces.length > 1 && (
+                  <button
+                    className="panel-row panel-row-danger"
+                    onClick={() => {
+                      if (window.confirm(`Are you sure you want to delete "${currentWorkspace?.name}"?`)) {
+                        deleteWorkspaceById(meta.currentWorkspaceId);
+                        setShowWorkspaceMenu(false);
+                      }
+                    }}
+                  >
+                    🗑 Delete Current
+                  </button>
                 )}
               </>
             )}

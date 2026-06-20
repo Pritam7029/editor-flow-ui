@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAppContext } from '../../context/AppContext';
+import { useChat } from '../../context/ChatContext';
+import { useEncryption } from '../../context/EncryptionContext';
 import { CHANNELS } from '../../utils/constants';
 import { isAdmin } from '../../utils/rbac';
+import { useFullscreenPanel } from '../../hooks/useFullscreenPanel';
+import EncryptionSetup from '../security/EncryptionSetup';
+import UnlockEncryption from '../security/UnlockEncryption';
 import {
   extractMentions,
   formatTime,
@@ -14,14 +19,14 @@ import {
 
 function MessageBubble({ message, editors, sourceLabel }) {
   const editor = editors.find((item) => item.id === message.senderId);
-  const urls = message.text.match(/(https?:\/\/[^\s]+|www\.[^\s]+)/gi) || [];
-  const cleanText = message.text.replace(/(https?:\/\/[^\s]+|www\.[^\s]+)/gi, '').trim();
+  const urls = (message.text && message.text.match(/(https?:\/\/[^\s]+|www\.[^\s]+)/gi)) || [];
+  const cleanText = message.text ? message.text.replace(/(https?:\/\/[^\s]+|www\.[^\s]+)/gi, '').trim() : '';
 
   return (
     <>
       {sourceLabel && <div className="tagged-source-label">{sourceLabel}</div>}
-      <div className={`message-bubble ${extractMentions(message.text, editors).length ? 'message-tagged' : ''}`}>
-        <div className="avatar-square" style={{ color: editor?.color || '#8b5cf6', background: `${editor?.color || '#8b5cf6'}20` }}>
+      <div className={`message-bubble ${extractMentions(message.text || '', editors).length ? 'message-tagged' : ''}`}>
+        <div className="avatar-square" style={{ color: (editor && editor.color) || '#8b5cf6', background: `${(editor && editor.color) || '#8b5cf6'}20` }}>
           {editor ? getAvatarInitials(editor.name) : 'A'}
         </div>
         <div className="message-body">
@@ -49,42 +54,70 @@ function MessageBubble({ message, editors, sourceLabel }) {
 }
 
 export default function ChatPanel({ onOpenTeamModal, mobileOpen, onCloseMobile }) {
-  const { workspace, meta, dispatch, sendMessage, clearActiveChat } = useAppContext();
+  const { workspace, meta, dispatch } = useAppContext();
+  
+  // Connect to E2EE and socket chat contexts
+  const { 
+    messages: e2eeMessages, 
+    sendMessage, 
+    startTyping, 
+    stopTyping, 
+    typingUsers, 
+    onlineUsers,
+    loading: chatLoading 
+  } = useChat();
+
+  const { 
+    encryptionIdentity,
+    isEncryptionIdentityLoaded,
+    isUnlocked,
+    isWorkspaceLocked, 
+    isWorkspaceEncryptionEnabled,
+    initializeWorkspaceEncryption, 
+    loading: encryptionLoading 
+  } = useEncryption();
+
   const [text, setText] = useState('');
-  const [showMenu, setShowMenu] = useState(false);
-  const menuRef = useRef(null);
   const scrollRef = useRef(null);
+  const typingTimeoutRef = useRef(null);
+  const [isFullscreen, setIsFullscreen] = useFullscreenPanel();
+  const [isMobile, setIsMobile] = useState(window.innerWidth <= 767);
+  const [mobileView, setMobileView] = useState('list');
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth <= 767);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(() => {
+    if (mobileOpen) {
+      setMobileView('list');
+    }
+  }, [mobileOpen]);
 
   const activeMessages = useMemo(() => {
-    if (workspace.activeChannel !== 'tagged') {
-      if (workspace.activeConv.type === 'dm') return workspace.chat.dm[workspace.activeConv.id]?.[workspace.activeChannel] || [];
-      if (workspace.activeConv.type === 'team') return workspace.chat.teams[workspace.activeConv.id]?.[workspace.activeChannel] || [];
-      return workspace.chat.global[workspace.activeChannel] || [];
+    if (!e2eeMessages) return [];
+    
+    if (workspace.activeChannel === 'links') {
+      return e2eeMessages.filter(m => {
+        const txt = m.text || '';
+        return txt.match(/(https?:\/\/[^\s]+|www\.[^\s]+)/gi);
+      });
     }
-
-    const collected = [];
-    ['general', 'links', 'feedback'].forEach((channel) => {
-      (workspace.chat.global[channel] || []).forEach((message) => {
-        if (extractMentions(message.text, workspace.editors).length) collected.push({ message, sourceLabel: `General #${channel}` });
+    
+    if (workspace.activeChannel === 'tagged') {
+      return e2eeMessages.filter(m => {
+        const txt = m.text || '';
+        const userName = meta && meta.account && meta.account.name ? meta.account.name.split(' ')[0] : '';
+        return userName && txt.toLowerCase().includes('@' + userName.toLowerCase());
       });
-    });
-    Object.entries(workspace.chat.dm).forEach(([editorId, bucket]) => {
-      const editorName = workspace.editors.find((item) => item.id === editorId)?.name || 'Unknown';
-      ['general', 'links', 'feedback'].forEach((channel) => {
-        (bucket[channel] || []).forEach((message) => {
-          if (extractMentions(message.text, workspace.editors).length) collected.push({ message, sourceLabel: `DM • ${editorName} #${channel}` });
-        });
-      });
-    });
-    Object.values(workspace.chat.teams).forEach((team) => {
-      ['general', 'links', 'feedback'].forEach((channel) => {
-        (team[channel] || []).forEach((message) => {
-          if (extractMentions(message.text, workspace.editors).length) collected.push({ message, sourceLabel: `${team.name} #${channel}` });
-        });
-      });
-    });
-    return collected.sort((a, b) => b.message.ts - a.message.ts);
-  }, [workspace]);
+    }
+    
+    return e2eeMessages;
+  }, [e2eeMessages, workspace.activeChannel, meta]);
 
   const activeHeader = useMemo(
     () => getConversationLabel(workspace, workspace.activeConv, workspace.activeChannel),
@@ -92,124 +125,243 @@ export default function ChatPanel({ onOpenTeamModal, mobileOpen, onCloseMobile }
   );
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-  }, [activeMessages]);
+    if (scrollRef.current) {
+      scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
+    }
+  }, [activeMessages, typingUsers]);
 
-  useEffect(() => {
-    const onClick = (event) => {
-      if (menuRef.current && !menuRef.current.contains(event.target)) setShowMenu(false);
-    };
-    document.addEventListener('mousedown', onClick);
-    return () => document.removeEventListener('mousedown', onClick);
-  }, []);
+  // 1. Check if encryption metadata is loading
+  if (encryptionLoading || !isEncryptionIdentityLoaded) {
+    return (
+      <aside className={`chat-panel ${mobileOpen ? 'mobile-open' : ''} ${isFullscreen ? 'panel-fullscreen' : ''}`}>
+        <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center' }}>
+          <div className="empty-card">Loading security settings...</div>
+        </div>
+      </aside>
+    );
+  }
+
+  // 2. Render setup overlay if user has no E2EE identity configured
+  if (!encryptionIdentity) {
+    return <EncryptionSetup />;
+  }
+
+  // 3. Render unlock overlay if user has identity but it is locked in memory
+  if (!isUnlocked) {
+    return <UnlockEncryption />;
+  }
 
   const submitMessage = () => {
     if (!text.trim()) return;
-    sendMessage({ text: text.trim(), senderId: meta.account.id });
+    sendMessage(text.trim());
     setText('');
+    stopTyping();
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
   };
 
+  const handleInputChange = (event) => {
+    setText(event.target.value);
+    startTyping();
+
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = setTimeout(() => {
+      stopTyping();
+    }, 3000);
+  };
+
+  const handleKeyPress = (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      submitMessage();
+    }
+  };
+
+  // UI state for approval/creation
+  const isOwner = meta && meta.account && workspace && (meta.account.id === workspace.ownerId);
+
   return (
-    <aside className={`chat-panel ${mobileOpen ? 'mobile-open' : ''}`}>
+    <aside className={`chat-panel ${mobileOpen ? 'mobile-open' : ''} ${isFullscreen ? 'panel-fullscreen' : ''}`}>
       <div className="panel-resizer left-resizer" data-panel="chat" />
-      <div className="chat-header-row">
-        <div>
-          <div className="section-title">{activeHeader.title}</div>
-          <div className="section-subtitle">{activeHeader.subtitle}</div>
-        </div>
-        <div className="chat-header-actions" ref={menuRef}>
-          <button className="icon-button only-mobile" onClick={onCloseMobile}>✕</button>
-          <button className="ghost-button small" onClick={() => window.alert(`📞 Starting voice call with ${activeHeader.title}…`)}>📞</button>
-          <button className="ghost-button small" onClick={() => window.alert(`🎥 Starting video call with ${activeHeader.title}…`)}>🎥</button>
-          <button className="ghost-button small" onClick={() => setShowMenu((value) => !value)}>⋯</button>
-          {showMenu && (
-            <div className="floating-panel chat-menu-panel">
-              {isAdmin(meta.account.id, workspace) && (
-                <button className="panel-row" onClick={() => { onOpenTeamModal(); setShowMenu(false); }}>＋ Create Team</button>
-              )}
-              <button className="panel-row panel-row-danger" onClick={() => { clearActiveChat(); setShowMenu(false); }}>🗑 Clear Chat</button>
-            </div>
-          )}
-        </div>
-      </div>
 
       <div className="chat-layout">
-        <div className="chat-conversations">
-          <div className="sidebar-title">Direct Messages</div>
-          <button className={`panel-row ${workspace.activeConv.type === 'global' ? 'panel-row-active' : ''}`} onClick={() => dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: { type: 'global', id: null } })}>👥 General</button>
-          {workspace.editors.filter(editor => isAdmin(meta.account.id, workspace) || editor.id === meta.account.id).map((editor) => (
-            <button
-              className={`panel-row ${workspace.activeConv.type === 'dm' && workspace.activeConv.id === editor.id ? 'panel-row-active' : ''}`}
-              key={editor.id}
-              onClick={() => dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: { type: 'dm', id: editor.id } })}
+        {(!isMobile || mobileView === 'list') && (
+          <div className="chat-conversations">
+            <div className="mobile-panel-head only-mobile" style={{ borderBottom: '1px solid var(--border)', paddingBottom: '8px', marginBottom: '8px' }}>
+              <strong>Chat List</strong>
+              <button className="icon-button" onClick={onCloseMobile}>✕</button>
+            </div>
+            
+            <div className="sidebar-title">Direct Messages</div>
+            <button 
+              className={`panel-row ${workspace.activeConv.type === 'global' ? 'panel-row-active' : ''}`} 
+              onClick={() => {
+                dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: { type: 'global', id: null } });
+                if (isMobile) setMobileView('chat');
+              }}
             >
-              {getAvatarInitials(editor.name)} {editor.name.split(' ')[0]}
+              👥 General
             </button>
-          ))}
-          <div className="sidebar-title">Teams</div>
-          {Object.entries(workspace.chat.teams).filter(([_, team]) => isAdmin(meta.account.id, workspace) || team.memberIds.includes(meta.account.id)).length === 0 && <div className="empty-inline">No teams yet.</div>}
-          {Object.entries(workspace.chat.teams)
-            .filter(([_, team]) => isAdmin(meta.account.id, workspace) || team.memberIds.includes(meta.account.id))
-            .map(([teamId, team]) => (
-            <button
-              className={`panel-row ${workspace.activeConv.type === 'team' && workspace.activeConv.id === teamId ? 'panel-row-active' : ''}`}
-              key={teamId}
-              onClick={() => dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: { type: 'team', id: teamId } })}
-            >
-              🏷 {team.name}
-            </button>
-          ))}
-        </div>
-
-        <div className="chat-main">
-          <div className="channel-tabs">
-            {CHANNELS.map((channel) => {
-              const taggedCount = workspace.notifications.filter((item) => !item.read && item.iconClass === 'mention-notif').length;
+            
+            {workspace.editors.map((editor) => {
+              const isOnline = onlineUsers.includes(editor.id);
               return (
                 <button
-                  className={`channel-tab ${workspace.activeChannel === channel ? 'channel-tab-active' : ''}`}
-                  key={channel}
-                  onClick={() => dispatch({ type: 'SET_ACTIVE_CHANNEL', channel })}
+                  className={`panel-row ${workspace.activeConv.type === 'dm' && workspace.activeConv.id === editor.id ? 'panel-row-active' : ''}`}
+                  key={editor.id}
+                  onClick={() => {
+                    dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: { type: 'dm', id: editor.id } });
+                    if (isMobile) setMobileView('chat');
+                  }}
+                  style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
                 >
-                  {channel === 'tagged' ? '@ tagged' : `# ${channel}`}
-                  {channel === 'tagged' && taggedCount > 0 && <span className="tag-badge">{taggedCount}</span>}
+                  <span 
+                    style={{ 
+                      width: '8px', 
+                      height: '8px', 
+                      borderRadius: '50%', 
+                      background: isOnline ? 'var(--primary, #8b5cf6)' : 'transparent',
+                      border: isOnline ? 'none' : '1.5px solid var(--text-muted, #94a3b8)',
+                      display: 'inline-block' 
+                    }} 
+                  />
+                  {getAvatarInitials(editor.name)} {editor.name.split(' ')[0]}
                 </button>
               );
             })}
-          </div>
 
-          <div className="chat-scroll" ref={scrollRef}>
-            {!activeMessages.length && <div className="empty-card">No messages yet.</div>}
-            {workspace.activeChannel === 'tagged'
-              ? activeMessages.map(({ message, sourceLabel }) => <MessageBubble editors={workspace.editors} key={`${sourceLabel}-${message.id}`} message={message} sourceLabel={sourceLabel} />)
-              : activeMessages.map((message) => <MessageBubble editors={workspace.editors} key={message.id} message={message} />)}
+            <div className="sidebar-title">Teams</div>
+            {Object.entries(workspace.chat.teams).filter(([_, team]) => isAdmin(meta.account.id, workspace) || team.memberIds.includes(meta.account.id)).length === 0 && <div className="empty-inline">No teams yet.</div>}
+            {Object.entries(workspace.chat.teams)
+              .filter(([_, team]) => isAdmin(meta.account.id, workspace) || team.memberIds.includes(meta.account.id))
+              .map(([teamId, team]) => (
+              <button
+                className={`panel-row ${workspace.activeConv.type === 'team' && workspace.activeConv.id === teamId ? 'panel-row-active' : ''}`}
+                key={teamId}
+                onClick={() => {
+                  dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: { type: 'team', id: teamId } });
+                  if (isMobile) setMobileView('chat');
+                }}
+              >
+                🏷 {team.name}
+              </button>
+            ))}
           </div>
+        )}
 
-          <div className="chat-compose">
-            <div className="compose-row">
-              <textarea
-                className="text-input"
-                placeholder="Type a message..."
-                rows={2}
-                value={text}
-                onChange={(event) => setText(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' && !event.shiftKey) {
-                    event.preventDefault();
-                    submitMessage();
-                  }
-                }}
-                onDrop={(event) => {
-                  event.preventDefault();
-                  const dropped = event.dataTransfer.getData('text');
-                  if (dropped) setText((current) => `${current} ${dropped}`.trim());
-                }}
-                onDragOver={(event) => event.preventDefault()}
-              />
-              <button className="primary-button send-button" onClick={submitMessage}>➤</button>
-            </div>
+        {(!isMobile || mobileView === 'chat') && (
+          <div className="chat-main">
+            {isMobile && (
+              <div className="mobile-panel-head" style={{ borderBottom: '1px solid var(--border)', paddingBottom: '12px', marginBottom: '12px' }}>
+                <button 
+                  className="ghost-button small" 
+                  onClick={() => setMobileView('list')}
+                  style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px', padding: '4px 10px', borderRadius: '8px' }}
+                >
+                  ← Channels
+                </button>
+                <strong style={{ fontSize: '15px' }}>{activeHeader.title}</strong>
+                <button className="icon-button" onClick={onCloseMobile}>✕</button>
+              </div>
+            )}
+
+            {isWorkspaceLocked ? (
+              <div className="empty-card" style={{ display: 'flex', flexDirection: 'column', height: '100%', justifyContent: 'center', alignItems: 'center', gap: '16px', padding: '32px', textAlign: 'center' }}>
+                <div style={{ fontSize: '48px' }}>🔒</div>
+                <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 600 }}>Workspace Key Access Required</h3>
+                <p style={{ maxWidth: '340px', fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>
+                  Your encryption identity is active, but you have not been granted access to this workspace's symmetric key yet.
+                </p>
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)', background: 'var(--bg-card)', padding: '10px 14px', borderRadius: '8px', border: '1px solid var(--border)' }}>
+                  Ask an approved workspace member or owner to grant key access to your profile.
+                </div>
+              </div>
+            ) : !isWorkspaceEncryptionEnabled ? (
+              <div className="empty-card" style={{ display: 'flex', flexDirection: 'column', height: '100%', justifyContent: 'center', alignItems: 'center', gap: '16px', padding: '32px', textAlign: 'center' }}>
+                <div style={{ fontSize: '48px' }}>🔐</div>
+                <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 600 }}>Enable Workspace Encryption</h3>
+                <p style={{ maxWidth: '340px', fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>
+                  End-to-End Encryption is not yet enabled for this workspace. Enable it to secure all chat thread messages.
+                </p>
+                {isOwner ? (
+                  <button className="primary-button" onClick={initializeWorkspaceEncryption} style={{ padding: '10px 20px', fontSize: '13px', borderRadius: '8px', background: 'var(--violet)', border: 'none', color: '#fff', fontWeight: '600' }}>
+                    Initialize Workspace E2EE
+                  </button>
+                ) : (
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', background: 'var(--bg-card)', padding: '10px 14px', borderRadius: '8px', border: '1px solid var(--border)' }}>
+                    Waiting for the workspace owner to initialize E2EE.
+                  </div>
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="channel-tabs">
+                  {CHANNELS.map((channel) => {
+                    const taggedCount = workspace.notifications.filter((item) => !item.read && item.iconClass === 'mention-notif').length;
+                    return (
+                      <button
+                        className={`channel-tab ${workspace.activeChannel === channel ? 'channel-tab-active' : ''}`}
+                        key={channel}
+                        onClick={() => dispatch({ type: 'SET_ACTIVE_CHANNEL', channel })}
+                      >
+                        {channel === 'tagged' ? '@ tagged' : `# ${channel}`}
+                        {channel === 'tagged' && taggedCount > 0 && <span className="tag-badge">{taggedCount}</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="chat-scroll" ref={scrollRef}>
+                  {chatLoading && <div className="empty-card">Loading messages...</div>}
+                  {!chatLoading && !activeMessages.length && <div className="empty-card">No messages yet.</div>}
+                  
+                  {!chatLoading && activeMessages.map((message) => (
+                    <MessageBubble 
+                      editors={workspace.editors} 
+                      key={message.id} 
+                      message={message} 
+                      sourceLabel={workspace.activeChannel === 'tagged' ? message.sourceLabel : null} 
+                    />
+                  ))}
+
+                  {/* Typing Indicator Bubble */}
+                  {typingUsers.length > 0 && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', opacity: 0.8 }}>
+                      <div className="avatar-square" style={{ color: '#8b5cf6', background: '#8b5cf620' }}>
+                        💬
+                      </div>
+                      <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', padding: '6px 12px', borderRadius: '12px', fontSize: '12px', color: 'var(--text-muted)' }}>
+                        {typingUsers.map(uid => {
+                          const ed = workspace.editors.find(e => e.id === uid);
+                          return ed ? ed.name.split(' ')[0] : 'Someone';
+                        }).join(', ')} is typing...
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="chat-compose">
+                  <div className="compose-row">
+                    <textarea
+                      className="text-input"
+                      placeholder="Type an encrypted message..."
+                      rows={2}
+                      value={text}
+                      onChange={handleInputChange}
+                      onKeyDown={handleKeyPress}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        const dropped = event.dataTransfer.getData('text');
+                        if (dropped) setText((current) => `${current} ${dropped}`.trim());
+                      }}
+                      onDragOver={(event) => event.preventDefault()}
+                    />
+                    <button className="primary-button send-button" onClick={submitMessage}>➤</button>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
-        </div>
+        )}
       </div>
     </aside>
   );
