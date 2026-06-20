@@ -10,7 +10,10 @@ import {
   generateWorkspaceKey,
   encryptWorkspaceKeyForUser,
   decryptWorkspaceKeyGrant,
-  arrayBufferToBase64
+  arrayBufferToBase64,
+  storeLocalPrivateKey,
+  getLocalPrivateKey,
+  clearLocalPrivateKey
 } from '../services/e2eeCrypto';
 import {
   getEncryptionIdentity,
@@ -77,16 +80,32 @@ export function EncryptionProvider({ children }) {
           const pubKey = await importPublicKeyJWK(identity.publicKey);
           setPublicKey(pubKey);
           setPublicKeyJwk(identity.publicKey);
+
+          // Try restoring private key from local IndexedDB for this user
+          const localPrivKey = await getLocalPrivateKey(currentUserId);
+          if (localPrivKey) {
+            setPrivateKey(localPrivKey);
+            setIsUnlocked(true);
+          } else {
+            setPrivateKey(null);
+            setIsUnlocked(false);
+          }
         } else {
           setEncryptionIdentity(null);
           setPublicKey(null);
           setPublicKeyJwk(null);
+          setPrivateKey(null);
+          setIsUnlocked(false);
+          // If no identity exists on backend, clean local storage
+          await clearLocalPrivateKey(currentUserId);
         }
       } catch (err) {
         console.error('Failed to load encryption identity:', err);
         setEncryptionIdentity(null);
         setPublicKey(null);
         setPublicKeyJwk(null);
+        setPrivateKey(null);
+        setIsUnlocked(false);
       } finally {
         setIsEncryptionIdentityLoaded(true);
         setLoading(false);
@@ -198,6 +217,10 @@ export function EncryptionProvider({ children }) {
 
     setPrivateKey(privKey);
     setIsUnlocked(true);
+
+    // Save decrypted private key in local IndexedDB
+    await storeLocalPrivateKey(currentUserId, privKey);
+
     return true;
   };
 
@@ -240,6 +263,9 @@ export function EncryptionProvider({ children }) {
         setPublicKeyJwk(pubKeyJwkString);
         setPrivateKey(keyPair.privateKey);
         setIsUnlocked(true);
+
+        // Save generated private key in local IndexedDB
+        await storeLocalPrivateKey(currentUserId, keyPair.privateKey);
       }
       return true;
     } catch (err) {
@@ -291,6 +317,9 @@ export function EncryptionProvider({ children }) {
         setEncryptionIdentity(identity);
         setPrivateKey(unlockedPrivateKey);
         setIsUnlocked(true);
+
+        // Save re-encrypted private key in local IndexedDB
+        await storeLocalPrivateKey(currentUserId, unlockedPrivateKey);
       }
       return true;
     } catch (err) {
@@ -306,6 +335,7 @@ export function EncryptionProvider({ children }) {
     try {
       setLoading(true);
       await resetEncryptionIdentity();
+      await clearLocalPrivateKey(currentUserId);
       setEncryptionIdentity(null);
       setIsUnlocked(false);
       setPublicKey(null);

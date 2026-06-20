@@ -234,3 +234,75 @@ export async function importRawSymmetricKey(base64Key) {
 // Aliases for compatibility
 export { encryptChatMessage as encryptText, decryptChatMessage as decryptText };
 
+// IndexedDB Helper to persist E2EE private key locally for session restore
+const DB_NAME = 'EditorFlow_E2EE_Store';
+const STORE_NAME = 'keys';
+const PRIVATE_KEY_RECORD_KEY = 'rsa_private_key';
+
+function openKeyDatabase() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (db && !db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME);
+      }
+    };
+    request.onsuccess = (e) => {
+      resolve(e.target.result);
+    };
+    request.onerror = (e) => {
+      reject(e.target.error);
+    };
+  });
+}
+
+export async function storeLocalPrivateKey(userId, privateKey) {
+  try {
+    const db = await openKeyDatabase();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([STORE_NAME], 'readwrite');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.put(privateKey, `${PRIVATE_KEY_RECORD_KEY}_${userId}`);
+      request.onsuccess = () => resolve(true);
+      request.onerror = (e) => reject(e.target.error);
+    });
+  } catch (err) {
+    console.error('Failed to store private key in IndexedDB:', err);
+    return false;
+  }
+}
+
+export async function getLocalPrivateKey(userId) {
+  try {
+    const db = await openKeyDatabase();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([STORE_NAME], 'readonly');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.get(`${PRIVATE_KEY_RECORD_KEY}_${userId}`);
+      request.onsuccess = (e) => resolve(e.target.result || null);
+      request.onerror = (e) => reject(e.target.error);
+    });
+  } catch (err) {
+    console.error('Failed to retrieve private key from IndexedDB:', err);
+    return null;
+  }
+}
+
+export async function clearLocalPrivateKey(userId) {
+  try {
+    const db = await openKeyDatabase();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([STORE_NAME], 'readwrite');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.delete(`${PRIVATE_KEY_RECORD_KEY}_${userId}`);
+      request.onsuccess = () => resolve(true);
+      request.onerror = (e) => reject(e.target.error);
+    });
+  } catch (err) {
+    console.error('Failed to clear private key from IndexedDB:', err);
+    return false;
+  }
+}
+
+
